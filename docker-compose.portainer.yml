@@ -1,0 +1,47 @@
+# Portainer "Web editor" variant: uses the image you built with `docker compose build` on the NAS
+# (Portainer's web editor can't build from this repo). Put the variables in the stack's
+# "Environment variables" section instead of a .env file.
+services:
+  eod-log:
+    image: eod-log:latest
+    container_name: eod-log
+    restart: unless-stopped
+    ports:
+      - "${EOD_PORT:-7240}:8080"
+    environment:
+      APP_PASSWORD: ${APP_PASSWORD}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      APP_NAME: ${APP_NAME:-EOD Log}
+      COMPANY_NAME: ${COMPANY_NAME:-KPI}
+      APP_TIMEZONE: ${APP_TIMEZONE:-America/New_York}
+      TZ: ${APP_TIMEZONE:-America/New_York}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      MANAGER_EMAILS: ${MANAGER_EMAILS:-}
+      SUMMARY_DAY: ${SUMMARY_DAY:-1}
+      SUMMARY_TIME: ${SUMMARY_TIME:-08:00}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-20}
+      SUMMARY_ENABLED: ${SUMMARY_ENABLED:-}
+      SUMMARY_TIMEZONE: ${SUMMARY_TIMEZONE:-}
+      SUMMARY_ATTACH_RECEIPTS: ${SUMMARY_ATTACH_RECEIPTS:-}
+      SMTP_TLS_REJECT_UNAUTHORIZED: ${SMTP_TLS_REJECT_UNAUTHORIZED:-}
+      SESSION_DAYS: ${SESSION_DAYS:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
+      TRUST_PROXY: ${TRUST_PROXY:-}
+    volumes:
+      - eod-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+volumes:
+  eod-data:

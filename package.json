@@ -1,0 +1,25 @@
+{
+  "name": "eod-log",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mobile-first End of Day crew log: hours per person, expenses with receipts, weekly summary email.",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "DATA_DIR=./data APP_PASSWORD=dev node --watch src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "nodemailer": "^7.0.10"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true
+  }
+}

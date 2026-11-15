@@ -1,0 +1,154 @@
+// End-to-end check against a running server. Usage:
+//   BASE=http://127.0.0.1:7240 APP_PASSWORD=... ADMIN_PASSWORD=... [MAILPIT=http://127.0.0.1:8025] node scripts/e2e.mjs
+import fs from 'node:fs';
+const BASE = process.env.BASE || 'http://127.0.0.1:7240';
+const MAILPIT = process.env.MAILPIT || '';
+let fails = 0;
+const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!cond) fails++; };
+const jar = { team: '', admin: '' };
+async function req(path, { who = 'team', method = 'GET', body, headers = {} } = {}) {
+  const r = await fetch(BASE + path, { method, body, redirect: 'manual', headers: { ...(jar[who] ? { cookie: jar[who] } : {}), ...headers } });
+  const sc = r.headers.getSetCookie ? r.headers.getSetCookie() : [];
+  if (sc.length) jar[who] = sc[0].split(';')[0];
+  return r;
+}
+const text = async (r) => r.text();
+const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const addDays = (s, n) => new Date(Date.parse(s + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
+const monday = (s) => { const d = new Date(s + 'T00:00:00Z'); return addDays(s, -((d.getUTCDay() + 6) % 7)); };
+const lastWeek = addDays(monday(today), -7);
+
+// health + auth wall
+ok((await req('/healthz')).status === 200, 'healthz 200');
+let r = await req('/', { who: 'none' }); ok(r.status === 303 && /\/login/.test(r.headers.get('location')), 'anonymous / redirects to /login');
+r = await req('/r/1', { who: 'none' }); ok(r.status === 401 || r.status === 303, 'anonymous receipt blocked');
+r = await req('/login', { who: 'team', method: 'POST', body: new URLSearchParams({ name: 'Jason', password: 'nope' }) }); ok(r.status === 401, 'wrong password rejected');
+r = await req('/login', { who: 'team', method: 'POST', body: new URLSearchParams({ name: 'Jason', password: process.env.APP_PASSWORD }) });
+ok(r.status === 303 && jar.team, 'team login sets cookie');
+ok(/HttpOnly/.test(r.headers.get('set-cookie')) && /Max-Age=\d{6,}/.test(r.headers.get('set-cookie')), 'cookie is HttpOnly and long-lived');
+
+// new form
+r = await req('/new'); const formHtml = await text(r);
+ok(r.status === 200 && /type="date"/.test(formHtml) && /id="crew-list"/.test(formHtml), 'new EOD form renders with date picker');
+
+// create entry 1: shoot last week, 3 crew with different hours, 2 expenses with receipts
+function entryForm(o) {
+  const fd = new FormData();
+  for (const [k, v] of Object.entries(o.fields)) fd.append(k, v);
+  fd.append('crew_json', JSON.stringify(o.crew));
+  fd.append('expenses_json', JSON.stringify(o.expenses || []));
+  (o.files || []).forEach(([field, file, type]) => fd.append(field, new Blob([fs.readFileSync(file)], { type }), file.split('/').pop()));
+  return fd;
+}
+const d1 = addDays(lastWeek, 1);
+r = await req('/new', { method: 'POST', body: entryForm({
+  fields: { job: 'Acme Spring Promo', date: d1, job_type: 'Film shoot', client: 'Acme Corp', location: 'Conshohocken, PA', tz: 'America/New_York', crew_chief: 'Jason', vehicle: 'Sprinter 2', vehicle_kind: 'company', driver: 'Jason', miles: '42', tolls: '6.50', media_taken: '4 CFexpress', media_used: '3', equip_requested: 'Extra wireless lav', equip_provided: 'Aputure 600d, 2x lav', notes: 'Client happy. Sending selects Friday.', issues: 'Cracked C-stand knuckle' },
+  crew: [
+    { name: 'Jason', role: 'DP', leave_shop: '06:00', on_set: '07:15', start: '07:30', meals: [{ start: '12:30', end: '13:00' }], wrap: '18:00', wheels_up: '18:45', return_shop: '20:00', edit_hours: '2' },
+    { name: 'Maria Lopez', role: 'Gaffer', start: '07:30', meals: [{ start: '12:30', end: '13:00' }], wrap: '18:00' },
+    { name: 'Dev Patel', role: 'PA', start: '09:00', meals: [{ start: '13:00', end: '13:30' }], wrap: '15:00' },
+  ],
+  expenses: [
+    { key: '1', description: 'Gas for Sprinter', category: 'Fuel', amount: '63.65', paid_by: 'personal', person: 'Maria Lopez', hasFiles: true },
+    { key: '2', description: 'Gaff tape', category: 'Supplies', amount: '24.99', paid_by: 'company', person: 'Jason', hasFiles: true },
+  ],
+  files: [['file_x1', 'test/fixtures/receipt.jpg', 'image/jpeg'], ['file_x2', 'test/fixtures/receipt.pdf', 'application/pdf']],
+}) });
+ok(r.status === 303 && /\/e\/\d+/.test(r.headers.get('location')), 'create entry 1 (3 crew, 2 receipts)');
+const id1 = Number(/\/e\/(\d+)/.exec(r.headers.get('location'))[1]);
+
+// entry 2: live event overnight, same week
+r = await req('/new', { method: 'POST', body: entryForm({
+  fields: { job: 'Gala at the Kimmel', date: addDays(lastWeek, 4), job_type: 'Live event', client: 'Philly Arts Fund', location: 'Kimmel Center', tz: 'America/New_York' },
+  crew: [
+    { name: 'Jason', role: 'A1', start: '15:00', meals: [{ start: '18:00', end: '18:45' }, { start: '23:30', end: '00:00' }], wrap: '02:00' },
+    { name: 'Dev Patel', role: 'Stagehand', hours_override: '8' },
+  ],
+  expenses: [{ key: '1', description: 'Parking garage', category: 'Parking', amount: '30', paid_by: 'personal', person: 'Dev Patel', hasFiles: false }],
+}) });
+ok(r.status === 303, 'create entry 2 (overnight times, typed-in hours)');
+const id2 = Number(/\/e\/(\d+)/.exec(r.headers.get('location'))[1]);
+
+// validation
+r = await req('/new', { method: 'POST', body: entryForm({ fields: { job: '', date: today }, crew: [] }) });
+ok(r.status === 400, 'missing job/crew rejected with 400');
+r = await req('/new', { method: 'POST', body: entryForm({ fields: { job: 'x', date: today }, crew: [{ name: 'A' }], files: [['file_g', 'package.json', 'text/html']] }) });
+ok(r.status === 303, 'non-image upload ignored, entry still saved');
+const idJunk = Number(/\/e\/(\d+)/.exec(r.headers.get('location'))[1]);
+
+// detail
+r = await req(`/e/${id1}`); let h = await text(r);
+ok(h.includes('Acme Spring Promo') && h.includes('Maria Lopez') && h.includes('Dev Patel'), 'detail shows crew');
+ok(h.includes('13.5 h') && h.includes('10 h') && h.includes('5.5 h'), 'detail shows separate hours (13.5 shop-to-shop / 10 / 5.5)');
+const rid = Number(/\/r\/(\d+)/.exec(h)[1]);
+ok(/<img src="\/r\/\d+"/.test(h) && />PDF</.test(h), 'detail shows image thumbnail and PDF receipt');
+r = await req(`/r/${rid}`); ok(r.status === 200 && /image\/jpeg/.test(r.headers.get('content-type')), 'receipt image served to signed-in user');
+r = await req(`/e/${id2}`); h = await text(r);
+ok(h.includes('9.75 h') && h.includes('8 h'), 'overnight shift 3pm-2am minus 2 meals = 9.75 h; typed-in 8 h');
+
+// week view (last week)
+r = await req(`/?week=${lastWeek}`); h = await text(r);
+ok(h.includes('Acme Spring Promo') && h.includes('Gala at the Kimmel'), 'week view lists both entries');
+ok(h.includes('46.75') && h.includes('$93.65'), 'week totals: 46.75 crew hrs, $93.65 to reimburse');
+// list + search + filter
+r = await req('/list?q=kimmel'); h = await text(r); ok(h.includes('Gala at the Kimmel') && !h.includes('Acme Spring Promo'), 'list search filters');
+r = await req('/list?person=Maria%20Lopez'); h = await text(r); ok(h.includes('Acme Spring Promo') && !h.includes('Gala at'), 'list filter by person');
+r = await req('/list?type=Live%20event'); h = await text(r); ok(h.includes('Gala at the Kimmel') && !h.includes('Acme Spring'), 'list filter by job type');
+// autocomplete
+r = await req('/new'); h = await text(r); ok(h.includes('<option value="Maria Lopez">') && h.includes('<option value="Acme Spring Promo">'), 'form remembers crew names and projects');
+r = await req(`/new?from=${id1}`); h = await text(r); ok(h.includes('Acme Spring Promo') && h.includes('Maria Lopez'), 'duplicate prefills job and crew');
+
+// edit: change Dev's wrap, add a receipt to the existing expense, delete the PDF
+r = await req(`/e/${id1}/edit`); h = await text(r);
+const init = JSON.parse(/<script type="application\/json" id="init">([\s\S]*?)<\/script>/.exec(h)[1]);
+const pdf = init.expenses[1].receipts[0].id;
+const crew = init.crew.map((c) => (c.name === 'Dev Patel' ? { ...c, wrap: '17:00' } : c));
+const fd = entryForm({ fields: { job: 'Acme Spring Promo', date: d1, job_type: 'Film shoot', client: 'Acme Corp', location: 'Conshohocken, PA', tz: 'America/New_York', crew_chief: 'Jason' },
+  crew, expenses: init.expenses.map((x, i) => ({ ...x, key: String(i + 1) })), files: [['file_x1', 'test/fixtures/receipt.jpg', 'image/jpeg']] });
+fd.append('delete_receipts_json', JSON.stringify([pdf]));
+r = await req(`/e/${id1}/edit`, { method: 'POST', body: fd }); ok(r.status === 303, 'edit saved');
+r = await req(`/e/${id1}`); h = await text(r);
+ok(h.includes('7.5 h') && !/>PDF</.test(h) && (h.match(/<img src="\/r\//g) || []).length === 2, 'edit: hours recomputed, PDF removed, 2nd photo added');
+
+// admin gating
+r = await req(`/e/${idJunk}/delete`, { method: 'POST' }); ok(r.status === 403, 'team user cannot delete');
+r = await req('/settings'); ok(r.status === 303 && /admin-login/.test(r.headers.get('location')), 'settings needs admin');
+r = await req('/admin-login', { method: 'POST', body: new URLSearchParams({ password: process.env.ADMIN_PASSWORD, next: '/settings' }) });
+ok(r.status === 303 && r.headers.get('location') === '/settings', 'admin elevation works');
+r = await req(`/e/${idJunk}/delete`, { method: 'POST' }); ok(r.status === 303, 'admin can delete');
+r = await req(`/e/${idJunk}`); ok(r.status === 404, 'deleted entry gone');
+r = await req('/settings', { method: 'POST', body: new URLSearchParams({ manager_emails: 'boss@kpi.example, ops@kpi.example, not-an-email', summary_enabled: '1', summary_day: '1', summary_time: '08:00', summary_tz: 'America/New_York' }) });
+h = await text(r); ok(h.includes('2 manager addresses'), 'settings save (invalid address dropped)');
+
+// summary preview
+r = await req(`/summary?week=${lastWeek}`); h = await text(r);
+ok(h.includes('Hours by person') && h.includes('Maria Lopez') && h.includes('$63.65') && h.includes(`/e/${id1}`), 'summary preview has people, reimbursements, links');
+
+// CSV
+r = await req(`/export/hours.csv?from=${lastWeek}&to=${addDays(lastWeek, 6)}`); h = await text(r);
+ok(/text\/csv/.test(r.headers.get('content-type')) && h.split('\r\n').length >= 6 && h.includes('Maria Lopez'), 'hours CSV export');
+r = await req('/export/expenses.csv'); h = await text(r); ok(h.includes('personal (reimburse)'), 'expenses CSV export');
+
+// email
+if (MAILPIT) {
+  await fetch(MAILPIT + '/api/v1/messages', { method: 'DELETE' });
+  r = await req('/summary/send', { method: 'POST', body: new URLSearchParams({ week: lastWeek }) }); h = await text(r);
+  ok(r.status === 200 && h.includes('boss@kpi.example'), 'send summary to managers');
+  await new Promise((res) => setTimeout(res, 800));
+  const list = await (await fetch(MAILPIT + '/api/v1/messages')).json();
+  ok(list.messages && list.messages.length === 1, 'SMTP catcher received 1 message');
+  const m = list.messages[0];
+  ok(m && m.To.length === 2 && /weekly summary/.test(m.Subject), `subject: ${m && m.Subject}`);
+  const full = await (await fetch(MAILPIT + '/api/v1/message/' + m.ID)).json();
+  ok(full.HTML.includes('Maria Lopez') && full.HTML.includes('$93.65') && full.Text.includes('Acme Spring Promo'), 'email body has hours + reimbursements (HTML and text)');
+  // with receipts attached, to a single test address
+  r = await req('/settings', { method: 'POST', body: new URLSearchParams({ manager_emails: 'boss@kpi.example, ops@kpi.example', summary_enabled: '1', summary_day: '1', summary_time: '08:00', summary_tz: 'America/New_York', summary_attach: '1' }) });
+  r = await req('/summary/send', { method: 'POST', body: new URLSearchParams({ week: lastWeek, to: 'jason@kpi.example' }) });
+  await new Promise((res) => setTimeout(res, 800));
+  const list2 = await (await fetch(MAILPIT + '/api/v1/messages')).json();
+  const t = list2.messages.find((x) => /\[TEST\]/.test(x.Subject));
+  ok(t && t.To.length === 1 && t.Attachments >= 2, `test email to one address with ${t && t.Attachments} receipt attachment(s)`);
+}
+
+console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
+process.exit(fails ? 1 : 0);
