@@ -90,6 +90,42 @@ for (const [name, bt, dev] of [['WebKit iPhone 13', webkit, devices['iPhone 13']
   await Promise.all([p.waitForURL(/\/e\/\d+/), p.locator('#save-btn').click()]);
   t = await p.locator('main').innerText();
   ok(/10\.5 h total/.test(t) && t.includes('7:30am'), `${name}: time values with seconds save (10.5 h)`);
+  // email preview: Back button (sticky at the top) returns to where it came from
+  await p.goto(BASE + '/admin-login?next=/settings'); await p.fill('input[name=password]', process.env.ADMIN_PASSWORD);
+  await Promise.all([p.waitForURL(/\/settings$/), p.locator('main button[type=submit]').click()]);
+  if (!(await p.locator('.sched').count())) {
+    await p.goto(BASE + '/settings/n/new'); await p.fill('input[name=name]', 'Preview test'); await p.fill('textarea[name=recipients]', 'boss@kpi.example');
+    await Promise.all([p.waitForURL(/\/settings/), p.locator('#sched-form button[type=submit]').click()]);
+  }
+  await Promise.all([p.waitForURL(/\/summary/), p.locator('.sched a', { hasText: 'Preview' }).first().click()]);
+  await p.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await p.waitForTimeout(200);
+  const bb = await p.locator('[data-back]').boundingBox();
+  ok(bb && bb.y >= 0 && bb.y < 80, `${name}: preview Back button stays visible at the top after scrolling (y=${bb && Math.round(bb.y)})`);
+  const pw = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  ok(pw <= 1, `${name}: preview page has no sideways scroll (${pw}px)`);
+  await Promise.all([p.waitForURL(/\/settings$/), p.locator('[data-back]').click()]);
+  ok(/\/settings$/.test(p.url()), `${name}: Back from preview returns to Settings`);
+  await p.locator('.sched a', { hasText: 'Edit' }).first().click(); await p.waitForURL(/\/settings\/n\/\d+$/);
+  const editUrl = p.url();
+  await Promise.all([p.waitForURL(/\/summary/), p.locator('a', { hasText: 'Preview' }).first().click()]);
+  await p.locator('.weeknav a[aria-label="Previous period"]').click(); await p.waitForURL(/from=/);
+  await Promise.all([p.waitForURL(editUrl), p.locator('[data-back]').click()]);
+  ok(p.url() === editUrl, `${name}: Back from preview (after paging) returns to the notification`);
+  // danger zone
+  await p.goto(BASE + '/settings');
+  await Promise.all([p.waitForURL(/\/settings\/clear$/), p.locator('.danger-zone a', { hasText: 'Clear all data' }).click()]);
+  t = await p.locator('main').innerText();
+  ok(/This permanently deletes \d+ EOD entr/.test(t) && /backups/.test(t), `${name}: clear page warns with counts and backup note`);
+  await p.fill('input[name=confirm]', 'delete'); await p.fill('input[name=password]', process.env.ADMIN_PASSWORD);
+  await p.locator('#clear-form button[type=submit]').click(); await p.waitForLoadState();
+  t = await p.locator('main').innerText();
+  ok(t.includes('Nothing was deleted') && await p.locator('.sched').count() === 0 && /\/settings\/clear$/.test(p.url()), `${name}: wrong confirmation text blocked`);
+  await p.fill('input[name=confirm]', 'DELETE'); await p.fill('input[name=password]', process.env.ADMIN_PASSWORD);
+  await Promise.all([p.waitForURL(/\/settings\?msg=/), p.locator('#clear-form button[type=submit]').click()]);
+  t = await p.locator('main').innerText();
+  ok(/Cleared \d+ EODs?/.test(t) && t.includes('backups/eod-'), `${name}: clear succeeds and shows a confirmation banner`);
+  await p.goto(BASE + '/list'); ok(await p.locator('.card.entry').count() === 0, `${name}: no entries left after clear`);
   ok(!errs.length, `${name}: no JS errors ${errs.join(' | ')}`);
   await b.close();
 }

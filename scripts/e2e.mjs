@@ -1,11 +1,15 @@
 // End-to-end check against a running server. Usage:
 //   BASE=http://127.0.0.1:7240 APP_PASSWORD=... ADMIN_PASSWORD=... [MAILPIT=http://127.0.0.1:8025] node scripts/e2e.mjs
 import fs from 'node:fs';
+import { execSync } from 'node:child_process';
+// optional: DOCKER_EXEC='sudo docker exec eod-log' lets the clear-data test look inside /data
+const DOCKER_EXEC = process.env.DOCKER_EXEC || '';
+const inData = (cmd) => execSync(`${DOCKER_EXEC} sh -c ${JSON.stringify(cmd)}`).toString().trim();
 const BASE = process.env.BASE || 'http://127.0.0.1:7240';
 const MAILPIT = process.env.MAILPIT || '';
 let fails = 0;
 const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!cond) fails++; };
-const jar = { team: '', admin: '' };
+const jar = { team: '', admin: '', team2: '' };
 async function req(path, { who = 'team', method = 'GET', body, headers = {} } = {}) {
   const r = await fetch(BASE + path, { method, body, redirect: 'manual', headers: { ...(jar[who] ? { cookie: jar[who] } : {}), ...headers } });
   const sc = r.headers.getSetCookie ? r.headers.getSetCookie() : [];
@@ -142,6 +146,10 @@ const opsId = Number([...h.matchAll(/href="\/settings\/n\/(\d+)"/g)].pop()[1]);
 // summary preview
 r = await req(`/summary?n=${opsId}`); h = await text(r);
 ok(h.includes('Hours by person') && h.includes('Maria Lopez') && h.includes('$63.65') && h.includes(`/e/${id1}`), 'summary preview has people, reimbursements, links');
+ok(h.includes(`href="/settings/n/${opsId}" data-back`), 'preview Back defaults to the notification');
+h = await text(await req(`/summary?n=${opsId}&back=/settings`)); ok(h.includes('href="/settings" data-back') && h.includes('back=%2Fsettings'), 'preview Back returns to Settings, kept on prev/next links');
+h = await text(await req(`/summary?n=${opsId}&back=//evil.example`)); ok(!h.includes('evil.example'), 'preview Back ignores off-site targets');
+h = await text(await req(`/summary?n=${opsId}&raw=1`)); ok(!h.includes('data-back') && h.includes('Hours by person'), 'raw email HTML has no Back button');
 
 // CSV
 r = await req(`/export/hours.csv?from=${lastWeek}&to=${addDays(lastWeek, 6)}`); h = await text(r);
@@ -159,6 +167,7 @@ if (MAILPIT) {
   const m = list.messages[0];
   ok(m && m.To.length === 2 && /Ops weekly/.test(m.Subject), `subject: ${m && m.Subject}`);
   const full = await (await fetch(MAILPIT + '/api/v1/message/' + m.ID)).json();
+  ok(!full.HTML.includes('data-back') && !full.HTML.includes('Email preview'), 'sent email has no preview Back button');
   ok(full.HTML.includes('Maria Lopez') && full.HTML.includes('$93.65') && full.Text.includes('Acme Spring Promo'), 'email body has hours + reimbursements (HTML and text)');
   r = await req(`/settings/n/${opsId}`, { method: 'POST', body: new URLSearchParams({ name: 'Ops weekly', recipients: 'boss@kpi.example, ops@kpi.example', frequency: 'weekly', weekday: '1', send_time: '23:59', tz: 'America/New_York', enabled: '1', attach: '1' }) });
   r = await req(`/settings/n/${opsId}/send`, { method: 'POST', body: new URLSearchParams({ to: 'jason@kpi.example' }) });
@@ -167,6 +176,45 @@ if (MAILPIT) {
   const t = list2.messages.find((x) => x.To.length === 1);
   ok(t && t.Attachments >= 2, `test email to one address with ${t && t.Attachments} receipt attachment(s)`);
   await req(`/settings/n/${opsId}/delete`, { method: 'POST' });
+}
+
+// danger zone: clear all data
+{
+  const det = await text(await req(`/e/${id1}`));
+  const rid = Number(/<img src="\/r\/(\d+)"/.exec(det)[1]);
+  h = await text(await req('/settings'));
+  ok(h.includes('Danger zone') && h.includes('href="/settings/clear"'), 'settings shows the danger zone');
+  h = await text(await req('/settings/clear'));
+  const nEntries = (await text(await req('/list'))).match(/class="card entry/g)?.length;
+  ok(/This permanently deletes \d+ EOD entr/.test(h) && /\d+ receipts?/.test(h) && /(KB|MB|bytes) of uploaded files/.test(h) && h.includes('/export/hours.csv') && h.includes('/data/backups/'), 'clear page shows counts, CSV link and backup note');
+  ok(h.includes('name="password"'), 'clear page asks for the admin password');
+  await req('/login', { who: 'team2', method: 'POST', body: new URLSearchParams({ name: 'Crew', password: process.env.APP_PASSWORD }) });
+  r = await req('/settings/clear', { who: 'team2' }); ok(r.status === 303 && /admin-login/.test(r.headers.get('location')), 'non-admin cannot open clear page');
+  const good = { scope: 'entries', confirm: 'DELETE', password: process.env.ADMIN_PASSWORD };
+  r = await req('/settings/clear', { who: 'team2', method: 'POST', body: new URLSearchParams(good) }); ok(r.status === 403, 'non-admin clear blocked (403)');
+  r = await req('/settings/clear', { method: 'POST', body: new URLSearchParams({ ...good, confirm: 'delete' }) }); h = await text(r); ok(r.status === 400 && h.includes('Nothing was deleted'), 'wrong confirmation text blocked');
+  r = await req('/settings/clear', { method: 'POST', body: new URLSearchParams({ ...good, password: 'nope' }) }); ok(r.status === 401, 'wrong admin password blocked');
+  r = await req('/settings/clear', { method: 'POST', body: new URLSearchParams(good), headers: { origin: 'https://evil.example' } }); ok(r.status === 403, 'cross-site clear blocked');
+  r = await req(`/e/${id1}`); ok(r.status === 200, 'nothing deleted by the blocked attempts');
+  const filesBefore = DOCKER_EXEC ? Number(inData('ls /data/uploads | wc -l')) : 0;
+  if (DOCKER_EXEC) { inData('rm -rf /data/backups'); ok(filesBefore >= 2, `uploads present before clear (${filesBefore})`); }
+  r = await req('/settings/clear', { method: 'POST', body: new URLSearchParams(good) });
+  ok(r.status === 303 && /msg=Cleared/.test(r.headers.get('location')), 'clear succeeds with DELETE + password');
+  h = await text(await req(r.headers.get('location'))); ok(h.includes('alert info') && h.includes('Cleared ') && h.includes('backups/eod-'), 'confirmation banner names the backup');
+  ok(h.includes('Ops weekly') || h.includes('Weekly summary'), 'notifications kept with the default option');
+  r = await req(`/e/${id1}`); ok(r.status === 404, 'entries gone after clear');
+  r = await req(`/r/${rid}`); ok(r.status === 404, 'receipt gone after clear');
+  ok(!(await text(await req('/list'))).includes('Acme Spring Promo'), `list empty after clear (had ${nEntries})`);
+  if (DOCKER_EXEC) {
+    ok(inData('ls -A /data/uploads | wc -l') === '0', 'upload files deleted');
+    ok(inData('ls /data/backups | wc -l') === '1', 'one database backup written');
+    ok(inData('ls /data/backups') .includes('before-clear.sqlite'), 'backup file name');
+    for (let i = 0; i < 3; i++) await req('/settings/clear', { method: 'POST', body: new URLSearchParams(good) });
+    ok(inData('ls /data/backups | wc -l') === '3', 'only the last 3 backups kept');
+  }
+  r = await req('/settings/clear', { method: 'POST', body: new URLSearchParams({ ...good, scope: 'all' }) });
+  h = await text(await req(r.headers.get('location')));
+  ok(h.includes('plus notifications') && h.includes('No notifications'), 'clear everything also removes notifications');
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');

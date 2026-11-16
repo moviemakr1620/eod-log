@@ -163,7 +163,8 @@ function summaryContext(req) {
 app.get('/summary', (req, res) => {
   const { sch, s, title } = summaryContext(req);
   if (req.query.raw === '1') return res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="margin:12px">${summary.emailHtml(s, title)}</body>`);
-  send(res, views.summaryPage(req, { s, sch, title, emailHtml: summary.emailHtml(s, title), isAdmin: auth.isAdmin(req), smtpOk: mailer.smtpConfigured() }));
+  const back = typeof req.query.back === 'string' && /^\/(?!\/)[\w\/-]*$/.test(req.query.back) ? req.query.back : '';
+  send(res, views.summaryPage(req, { s, sch, title, back, emailHtml: summary.emailHtml(s, title), isAdmin: auth.isAdmin(req), smtpOk: mailer.smtpConfigured() }));
 });
 
 const FREQ_KEYS = Object.keys(mailer.FREQS);
@@ -193,7 +194,7 @@ function settingsPage(req, res, extra = {}, status = 200) {
   const lastBy = {};
   mailer.recentSends(500).forEach((r) => { if (!lastBy[r.schedule_id]) lastBy[r.schedule_id] = r; });
   const schedules = mailer.listSchedules().map((x) => ({ ...x, desc: mailer.describe(x), last: lastBy[x.id], preview: mailer.previewPeriod(x) }));
-  send(res, views.settings(req, { smtp, schedules, log: mailer.recentSends(15), ...extra }), status);
+  send(res, views.settings(req, { smtp, schedules, log: mailer.recentSends(15), stats: dataStats(), ...extra }), status);
 }
 app.get('/settings', requireAdmin, (req, res) => settingsPage(req, res, { msg: req.query.msg ? String(req.query.msg).slice(0, 200) : '' }));
 app.get('/settings/n/new', requireAdmin, (req, res) => send(res, views.scheduleForm(req, { sch: { name: '', recipients: '', frequency: 'daily', weekday: 1, send_time: '18:00', tz: cfg.TZ, covers: 'today', attach: 0, enabled: 1 }, isNew: true })));
@@ -226,6 +227,61 @@ app.post('/settings/n/:id/send', requireAdmin, loadSch, async (req, res) => {
   } catch (err) {
     send(res, views.message(req, { title: 'Could not send', text: err.message, back: '/settings' }), 500);
   }
+});
+
+// ---- danger zone: clear all data
+const BACKUP_DIR = path.join(cfg.DATA_DIR, 'backups');
+function dataStats() {
+  let uploadBytes = 0, files = [];
+  try { files = fs.readdirSync(cfg.UPLOAD_DIR); } catch { /* none */ }
+  files.forEach((f) => { try { const st = fs.statSync(path.join(cfg.UPLOAD_DIR, f)); if (st.isFile()) uploadBytes += st.size; } catch { /* gone */ } });
+  const n = (t) => db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n;
+  return { entries: n('entries'), receipts: n('receipts'), schedules: n('schedules'), uploadBytes };
+}
+// Same-origin check for the destructive POST (on top of SameSite=Lax cookies and form-action 'self').
+function sameOrigin(req) {
+  const o = req.get('origin') || req.get('referer');
+  if (!o) return true; // non-browser clients; they still need the session + DELETE + admin password
+  try { return new URL(o).host === req.get('host'); } catch { return false; }
+}
+async function backupDb() {
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').replace('.', '').replace('Z', '');
+  const file = path.join(BACKUP_DIR, `eod-${stamp}-before-clear.sqlite`);
+  await db.backup(file);
+  fs.chmodSync(file, 0o600);
+  const old = fs.readdirSync(BACKUP_DIR).filter((f) => /^eod-.*\.sqlite$/.test(f)).sort();
+  old.slice(0, Math.max(0, old.length - 3)).forEach((f) => fs.rmSync(path.join(BACKUP_DIR, f), { force: true }));
+  return file;
+}
+const clearPage = (req, res, extra = {}, status = 200) => send(res, views.clearPage(req, { stats: dataStats(), needPw: auth.adminConfigured(), ...extra }), status);
+app.get('/settings/clear', requireAdmin, (req, res) => clearPage(req, res));
+app.post('/settings/clear', requireAdmin, async (req, res) => {
+  const scope = req.body.scope === 'all' ? 'all' : 'entries';
+  if (!sameOrigin(req)) return clearPage(req, res, { scope, error: 'Blocked: this request did not come from this site.' }, 403);
+  if (String(req.body.confirm || '').trim() !== 'DELETE') return clearPage(req, res, { scope, error: 'Nothing was deleted. Type DELETE (in capitals) to confirm.' }, 400);
+  if (auth.adminConfigured()) {
+    if (auth.limited(req.ip)) return clearPage(req, res, { scope, error: 'Too many tries. Wait 10 minutes.' }, 429);
+    if (!auth.checkAdmin(req.body.password)) { auth.recordFail(req.ip); return clearPage(req, res, { scope, error: 'Nothing was deleted. Wrong admin password.' }, 401); }
+  }
+  const before = dataStats();
+  let backup;
+  try { backup = await backupDb(); } catch (err) {
+    console.error('[eod-log] backup before clear failed', err);
+    return clearPage(req, res, { scope, error: 'Nothing was deleted: could not write the backup to /data/backups (' + err.message + ').' }, 500);
+  }
+  db.transaction(() => {
+    db.exec('DELETE FROM receipts; DELETE FROM expenses; DELETE FROM crew; DELETE FROM entries;');
+    if (scope === 'all') db.exec('DELETE FROM sends; DELETE FROM schedules; DELETE FROM settings;');
+  })();
+  let files = [];
+  try { files = fs.readdirSync(cfg.UPLOAD_DIR); } catch { /* none */ }
+  files.forEach((f) => fs.rmSync(path.join(cfg.UPLOAD_DIR, f), { force: true, recursive: true }));
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  db.exec('VACUUM');
+  console.log(`[eod-log] data cleared (${scope}) by ${(req.session && req.session.n) || 'admin'}: ${before.entries} entries, ${before.receipts} receipts; backup ${backup}`);
+  const msg = `Cleared ${before.entries} EOD${before.entries === 1 ? '' : 's'} and ${before.receipts} receipt${before.receipts === 1 ? '' : 's'}${scope === 'all' ? ', plus notifications and settings' : ''}. A database backup was saved as backups/${path.basename(backup)}.`;
+  res.redirect(303, '/settings?msg=' + encodeURIComponent(msg));
 });
 
 // ---- CSV export

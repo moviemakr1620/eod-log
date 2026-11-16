@@ -27,8 +27,9 @@ Built for film shoots, AV installs and live events. Mobile first: big tap target
 - **Entry page**: every time per person, receipts as thumbnails, plus Edit, Duplicate and Delete (admin).
 - **Email notifications** (Settings, admin): add as many as you want. Each has a name, its own recipients, **how often** (every day, weekdays, or weekly on a chosen day), the send time and time zone, an on/off switch, and an option to attach receipts.
   Each email has totals, hours by person (with Edit/DIT and the amount to reimburse), jobs, every EOD with a link, and an expense list that flags missing receipts.
-  **If there are no EODs in the period, nothing is sent**; it's logged as *skipped*. Each notification has **Preview** and **Send test**, and Settings shows a notification log.
+  **If there are no EODs in the period, nothing is sent**; it's logged as *skipped*. Each notification has **Preview** and **Send test**, and Settings shows a notification log. The preview has a **Back** button pinned to the top (it returns to Settings or the notification you came from); it is never part of the email itself.
 - **CSV export** of hours (one row per person per day) and expenses, for payroll or spreadsheets.
+- **Clear all data (admin only).** Settings → *Danger zone* → **Clear all data…** shows how many EODs, receipts and MB will go, links the CSV exports, and needs you to type `DELETE` plus the admin password. By default it deletes all EODs, expenses, receipts and uploaded files and keeps notifications; you can also choose to reset notifications, settings and the log. Before clearing it saves a database copy to `/data/backups/` (last 3 kept; receipt files are not included), then compacts the database.
 
 ### How hours are counted
 
@@ -85,6 +86,8 @@ Then open **`http://<nas-ip>:7240`** on your phone and sign in. To put it on the
 - **Bind mount instead of a volume** (e.g. a NAS share you back up): replace `eod-data:/data` with `/volume1/docker/eod-log:/data`, then run `sudo chown -R 1000:1000 /volume1/docker/eod-log` once. The container runs as uid 1000 and must be able to write there.
 
 ### Backups
+
+"Clear all data" automatically writes `/data/backups/eod-<UTC time>-before-clear.sqlite` first (the newest 3 are kept). For regular backups:
 
 Back up the volume or bind-mount folder. That covers the database and receipts. For a consistent copy while it is running:
 ```bash
@@ -206,7 +209,7 @@ npm test             # unit tests for the hours maths
 ## Testing
 
 - `npm test`: unit tests for `public/hours.js` (start/stop, optional meals, overnight, travel times ignored, typed-in hours, time formats such as `07:30:00`, `7:30 PM`).
-- `scripts/e2e.mjs`: about 40 end-to-end checks against a running server. It signs in, creates entries with several crew on separate hours and with receipts, then checks the week and list views, search and filters, editing, deleting receipts, admin-only actions, settings and CSV.
+- `scripts/e2e.mjs`: about 70 end-to-end checks against a running server. It signs in, creates entries with several crew on separate hours and with receipts, then checks the week and list views, search and filters, editing, deleting receipts, admin-only actions, settings, CSV, the preview Back button and Clear all data (wrong confirmation, non-admin and cross-site attempts blocked). Set `DOCKER_EXEC='docker exec eod-log'` to also check that upload files are deleted and backups are written.
   With `MAILPIT=` set, it also sends the summary to a [Mailpit](https://github.com/axllent/mailpit) catcher and checks the email, including attached receipts.
   `BASE=http://127.0.0.1:7240 APP_PASSWORD=... ADMIN_PASSWORD=... MAILPIT=http://127.0.0.1:8025 node scripts/e2e.mjs`
 - `scripts/screenshots.mjs`: phone-size (390×844) screenshots into `preview/`. It needs `puppeteer-core` installed outside the project and Chrome.

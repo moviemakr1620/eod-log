@@ -2,7 +2,7 @@ const cfg = require('./config');
 const H = require('../public/hours.js');
 const { html, raw, prettyDate, rangeLabel, money, addDays, TIMEZONES, tzShort, tzLabel, JOB_TYPES, EXPENSE_CATS, WDL } = require('./util');
 
-const V = '14'; // static asset cache-buster
+const V = '16'; // static asset cache-buster
 const icon = {
   plus: raw('<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" fill="none"/></svg>'),
   left: raw('<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'),
@@ -208,7 +208,7 @@ ${dl('dl-jobs', sugg.jobs)}${dl('dl-people', sugg.people)}${dl('dl-clients', sug
   return layout(req, { title: isNew ? 'New EOD' : 'Edit EOD', body, fab: false, scripts: ['/hours.js', '/form.js'] });
 }
 
-function settings(req, { smtp, schedules, log, msg, err }) {
+function settings(req, { smtp, schedules, log, msg, err, stats }) {
   const statusTag = (st) => html`<span class="tag tag-${st}">${st}</span>`;
   const period = (r) => (String(r.period_from).startsWith('test:') ? 'test' : r.period_from === r.period_to ? prettyDate(r.period_from) : `${prettyDate(r.period_from)} – ${prettyDate(r.period_to)}`);
   const body = html`<h1>Settings</h1>
@@ -219,7 +219,7 @@ ${schedules.length ? schedules.map((x) => html`<div class="card sched${x.enabled
 <div class="crew-top"><div><h3>${x.name}</h3><div class="small">${x.desc}</div></div>${x.enabled ? html`<span class="tag tag-sent">on</span>` : html`<span class="tag">off</span>`}</div>
 <p class="small ${x.recipients ? '' : 'warn'}">${x.recipients ? html`To: ${x.recipients}` : 'No recipients yet'}${x.attach ? ' · receipts attached' : ''}</p>
 ${x.last ? html`<p class="small muted">Last: ${statusTag(x.last.status)} ${period(x.last)} · ${x.last.detail || ''}</p>` : html`<p class="small muted">Not run yet.</p>`}
-<div class="row3"><a class="btn" href="/settings/n/${x.id}">Edit</a><a class="btn" href="/summary?n=${x.id}">Preview</a>
+<div class="row3"><a class="btn" href="/settings/n/${x.id}">Edit</a><a class="btn" href="/summary?n=${x.id}&back=/settings">Preview</a>
 <form method="post" action="/settings/n/${x.id}/send"><button class="btn" type="submit" style="width:100%"${smtp.ok ? '' : raw(' disabled')}>Send test</button></form></div>
 </div>`) : html`<div class="card empty"><p>No notifications. Add one to email a summary daily or weekly.</p></div>`}
 </section>
@@ -235,6 +235,8 @@ ${log.map((r) => html`<tr><td class="small">${new Date(r.at).toLocaleString('en-
 </tbody></table></details>` : ''}
 
 <div class="card stack"><h2>Export</h2><p class="small"><a href="/export/hours.csv">All hours (CSV)</a> · <a href="/export/expenses.csv">All expenses (CSV)</a></p></div>
+<div class="card stack danger-zone"><h2>Danger zone</h2><p class="small">${stats.entries} EOD${stats.entries === 1 ? '' : 's'}, ${stats.receipts} receipt${stats.receipts === 1 ? '' : 's'} (${fmtMB(stats.uploadBytes)}). Clearing deletes them for good; you'll get a warning and a chance to download a CSV first.</p>
+<a class="btn danger big" href="/settings/clear">Clear all data…</a></div>
 <div class="card stack"><h2>This device</h2><p class="small">Signed in as <b>${(req.session && req.session.n) || 'no name'}</b>${req.session && req.session.r === 'admin' ? ' (admin)' : ''}.</p>
 <form method="post" action="/logout"><button class="btn big" type="submit">Sign out</button></form></div>`;
   return layout(req, { title: 'Settings', active: 'settings', body, fab: false });
@@ -261,24 +263,50 @@ function scheduleForm(req, { sch, isNew }) {
 <button class="btn primary big" type="submit">${isNew ? 'Add notification' : 'Save'}</button></form>
 ${isNew ? '' : html`<form method="post" action="/settings/n/${sch.id}/send" class="card stack"><h2>Send a test</h2>
 <label>To <span class="muted">(empty = the recipients above)</span><input type="email" name="to" placeholder="you@example.com" autocapitalize="off"></label>
-<button class="btn big" type="submit">Send test now</button><a class="btn big" href="/summary?n=${sch.id}">Preview</a></form>
+<button class="btn big" type="submit">Send test now</button><a class="btn big" href="/summary?n=${sch.id}&back=/settings/n/${sch.id}">Preview</a></form>
 <form method="post" action="/settings/n/${sch.id}/delete" data-confirm="Delete this notification?" class="actions"><button class="btn danger big" type="submit">Delete notification</button></form>`}`;
   return layout(req, { title: 'Notification', active: 'settings', body, fab: false });
 }
 
-function summaryPage(req, { s, sch, title, emailHtml, isAdmin, smtpOk }) {
+function summaryPage(req, { s, sch, title, emailHtml, isAdmin, smtpOk, back }) {
   const days = Math.round((Date.parse(s.to) - Date.parse(s.from)) / 864e5) + 1;
-  const nav = (dir) => `/summary?${sch ? `n=${sch.id}&` : ''}from=${addDays(s.from, dir * days)}&to=${addDays(s.to, dir * days)}`;
-  const body = html`<div class="weeknav"><a class="iconbtn" href="${nav(-1)}" aria-label="Previous period">${icon.left}</a>
+  const backHref = back || (isAdmin ? (sch ? `/settings/n/${sch.id}` : '/settings') : '/');
+  const backLabel = backHref === '/settings' ? 'Settings' : backHref.startsWith('/settings/n/') ? 'Notification' : 'Back';
+  const nav = (dir) => `/summary?${sch ? `n=${sch.id}&` : ''}from=${addDays(s.from, dir * days)}&to=${addDays(s.to, dir * days)}${back ? '&back=' + encodeURIComponent(back) : ''}`;
+  const body = html`<div class="previewbar"><a class="btn backbtn" href="${backHref}" data-back>${icon.left} ${backLabel}</a><span class="previewtag">Email preview</span></div>
+<div class="weeknav"><a class="iconbtn" href="${nav(-1)}" aria-label="Previous period">${icon.left}</a>
 <div class="weeklabel"><h1>${title}</h1><span class="muted small">${s.label}${s.entries.length ? '' : ' · no EODs: a scheduled send would be skipped'}</span></div>
 <a class="iconbtn" href="${nav(1)}" aria-label="Next period">${icon.right}</a></div>
 ${isAdmin && smtpOk && sch ? html`<form method="post" action="/settings/n/${sch.id}/send" class="row2 card"><input type="hidden" name="from" value="${s.from}"><input type="hidden" name="to_date" value="${s.to}"><input type="email" name="to" placeholder="Test address (empty = recipients)" aria-label="Send to"><button class="btn primary" type="submit">Send test</button></form>` : ''}
-<div class="emailprev">${raw(emailHtml)}</div>`;
-  return layout(req, { title, active: 'settings', body });
+<div class="emailprev">${raw(emailHtml)}</div>
+<p class="center"><a class="btn big" href="${backHref}">${icon.left} Back to ${backLabel === 'Back' ? 'the app' : backLabel}</a></p>`;
+  return layout(req, { title, active: 'settings', body, bare: true, fab: false });
+}
+
+const fmtMB = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : b >= 1024 ? Math.round(b / 1024) + ' KB' : b + ' bytes');
+function clearPage(req, { stats, needPw, error, scope }) {
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const body = html`<div class="detail-head"><a class="back" href="/settings">${icon.left} Settings</a></div>
+<h1>Clear all data</h1>
+${error ? html`<p class="alert" role="alert">${error}</p>` : ''}
+<div class="card danger-zone stack">
+<p class="warnbig"><b>This permanently deletes ${plural(stats.entries, 'EOD entry').replace('entrys', 'entries')}, ${plural(stats.receipts, 'receipt')} and ${fmtMB(stats.uploadBytes)} of uploaded files.</b> People will lose every logged day, hour and expense.</p>
+<p class="small"><b>Download a copy first:</b> <a href="/export/hours.csv">All hours (CSV)</a> · <a href="/export/expenses.csv">All expenses (CSV)</a></p>
+<p class="small muted">Before clearing, a backup copy of the database is saved in <code>/data/backups/</code> on the server (the last 3 are kept). Receipt image/PDF files are <b>not</b> in that backup; once cleared they are gone.</p>
+</div>
+<form method="post" action="/settings/clear" class="card stack" id="clear-form" autocomplete="off">
+<fieldset class="stack plain"><legend><b>What to clear</b></legend>
+<label class="check"><input type="radio" name="scope" value="entries"${scope !== 'all' ? raw(' checked') : ''}> EOD entries, expenses and receipts (keep notifications)</label>
+<label class="check"><input type="radio" name="scope" value="all"${scope === 'all' ? raw(' checked') : ''}> Everything: also notifications, settings and the notification log (${plural(stats.schedules, 'notification')})</label></fieldset>
+<label><span>Type <b>DELETE</b> to confirm</span><input name="confirm" required autocapitalize="characters" spellcheck="false" autocomplete="off" placeholder="DELETE"></label>
+${needPw ? html`<label>Admin password<input type="password" name="password" required autocomplete="current-password"></label>` : ''}
+<button class="btn dangerfill big" type="submit">Clear all data</button>
+<a class="btn big" href="/settings">Cancel</a></form>`;
+  return layout(req, { title: 'Clear all data', active: 'settings', body, fab: false });
 }
 
 function message(req, { title, text, back }) {
   return layout(req, { title, body: html`<div class="card narrow"><h1>${title}</h1><p>${text}</p><a class="btn big" href="${back || '/'}">Back</a></div>` });
 }
 
-module.exports = { layout, login, adminLogin, week, list, detail, form, settings, scheduleForm, summaryPage, message, tzShort };
+module.exports = { layout, login, adminLogin, week, list, detail, form, settings, scheduleForm, summaryPage, clearPage, message, tzShort };
