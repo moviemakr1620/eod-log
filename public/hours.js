@@ -1,62 +1,55 @@
-/* Shared hours maths (browser + Node). Times are "HH:MM" strings (24h, from <input type="time">).
- * Times are read in day order: leave shop -> on set -> start -> meals -> wrap -> wheels up -> return.
- * A time earlier than the one before it is treated as after midnight (so a 6pm-2am day works). */
+/* Shared hours maths (browser + Node).
+ * Rule: hours = Stop - Start - meal breaks. Stop earlier than Start = past midnight.
+ * Other times (leave shop, on site, off site, return) are for the record only and never change hours.
+ * On-site hours (On site -> Off site) are shown as a secondary figure. */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.EODHours = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
-  function toMin(t) {
-    if (!t) return null;
-    var m = /^(\d{1,2}):(\d{2})/.exec(String(t));
+  /** Normalise anything a browser or a person might send into "HH:MM" (24h), or null.
+   * Accepts "7:30", "07:30", "07:30:00", "07:30:00.000", "7:30 PM", "7:30pm", "730", "1930", "7pm". */
+  function norm(t) {
+    if (t === null || t === undefined) return null;
+    var s = String(t).trim().toLowerCase().replace(/\s+/g, '');
+    if (!s) return null;
+    var m = /^(\d{1,2})(?::?(\d{2}))?(?::\d{2}(?:\.\d+)?)?(am|pm|a|p)?$/.exec(s);
     if (!m) return null;
-    var h = +m[1], mi = +m[2];
+    var h = +m[1], mi = m[2] ? +m[2] : 0, ap = m[3];
+    if (!m[2] && !ap && m[1].length < 3) return null; // a bare "7" is too ambiguous
+    if (ap) { if (h < 1 || h > 12) return null; if (ap[0] === 'p' && h < 12) h += 12; if (ap[0] === 'a' && h === 12) h = 0; }
     if (h > 23 || mi > 59) return null;
-    return h * 60 + mi;
+    return (h < 10 ? '0' : '') + h + ':' + (mi < 10 ? '0' : '') + mi;
   }
+  // "730"/"1930" style (no colon, 3-4 digits)
+  function norm2(t) {
+    var s = t === null || t === undefined ? '' : String(t).trim();
+    if (/^\d{3,4}$/.test(s)) { var h = +s.slice(0, s.length - 2), mi = +s.slice(-2); if (h < 24 && mi < 60) return (h < 10 ? '0' : '') + h + ':' + s.slice(-2); return null; }
+    return norm(s);
+  }
+  function toMin(t) { var n = norm2(t); if (!n) return null; return +n.slice(0, 2) * 60 + +n.slice(3); }
+  function span(a, b) { var x = toMin(a), y = toMin(b); if (x === null || y === null) return null; var d = y - x; if (d < 0) d += 1440; return d; }
+  function num(v) { if (v === null || v === undefined || String(v).trim() === '') return null; var n = Number(String(v).trim().replace(',', '.')); return isFinite(n) ? n : null; }
 
   function compute(c) {
     c = c || {};
-    var seq = [];
-    function add(key, v) { var m = toMin(v); if (m !== null) seq.push({ k: key, m: m }); }
-    add('leave_shop', c.leave_shop);
-    add('on_set', c.on_set);
-    add('start', c.start);
-    var meals = Array.isArray(c.meals) ? c.meals : [];
-    meals.forEach(function (ml, i) { if (ml) { add('meal_s' + i, ml.start); add('meal_e' + i, ml.end); } });
-    add('wrap', c.wrap);
-    add('wheels_up', c.wheels_up);
-    add('return_shop', c.return_shop);
-
-    // unwrap past midnight
-    var prev = null, at = {};
-    seq.forEach(function (s) {
-      var v = s.m;
-      if (prev !== null) while (v < prev) v += 1440;
-      at[s.k] = v; prev = v;
-    });
-
+    var stop = c.stop !== undefined ? c.stop : c.wrap; // "wrap" = old name
     var warnings = [];
+    var meals = Array.isArray(c.meals) ? c.meals : [];
     var mealMin = 0;
     meals.forEach(function (ml, i) {
-      var a = at['meal_s' + i], b = at['meal_e' + i];
-      if (a !== undefined && b !== undefined) mealMin += b - a;
-      else if (a !== undefined || b !== undefined) warnings.push('Meal ' + (i + 1) + ' needs a start and an end');
+      if (!ml) return;
+      var d = span(ml.start, ml.end);
+      if (d !== null) mealMin += d;
+      else if (toMin(ml.start) !== null || toMin(ml.end) !== null) warnings.push('Meal ' + (i + 1) + ' needs a start and an end');
     });
-
-    var workStart = at.start !== undefined ? at.start : at.on_set;
-    var workEnd = at.wrap;
-    var workMin = (workStart !== undefined && workEnd !== undefined) ? Math.max(0, workEnd - workStart - mealMin) : null;
-
-    var begin = [at.leave_shop, at.on_set, at.start].filter(function (x) { return x !== undefined; })[0];
-    var end = [at.return_shop, at.wheels_up, at.wrap].filter(function (x) { return x !== undefined; })[0];
-    var totalMin = (begin !== undefined && end !== undefined) ? Math.max(0, end - begin - mealMin) : null;
-
-    var override = c.hours_override === '' || c.hours_override == null ? null : Number(c.hours_override);
-    if (override !== null && !isFinite(override)) override = null;
+    var shift = span(c.start, stop);
+    var totalMin = shift === null ? null : Math.max(0, shift - mealMin);
+    if (shift === null && (toMin(c.start) !== null) !== (toMin(stop) !== null)) warnings.push(toMin(c.start) === null ? 'Add a start time' : 'Add a stop time');
+    var onSiteMin = span(c.on_set, c.wheels_up);
+    var override = num(c.hours_override);
     var paidMin = override !== null ? Math.round(override * 60) : totalMin;
-
     if (totalMin !== null && totalMin > 18 * 60) warnings.push('More than 18 hours, check the times');
-    return { totalMin: totalMin, workMin: workMin, mealMin: mealMin, paidMin: paidMin, overridden: override !== null, warnings: warnings };
+    return { totalMin: totalMin, onSiteMin: onSiteMin, mealMin: mealMin, paidMin: paidMin, overridden: override !== null, warnings: warnings };
   }
 
   function fmt(min) {
@@ -74,5 +67,5 @@
     h = h % 12; if (h === 0) h = 12;
     return h + ':' + (mi < 10 ? '0' : '') + mi + s;
   }
-  return { toMin: toMin, compute: compute, fmt: fmt, dec: dec, ampm: ampm };
+  return { norm: norm2, toMin: toMin, span: span, num: num, compute: compute, fmt: fmt, dec: dec, ampm: ampm };
 });

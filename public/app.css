@@ -113,3 +113,10 @@ details.sect>summary{min-height:32px}details.sect[open]>summary{margin-bottom:12
 .savebar{position:sticky;bottom:0;z-index:15;display:grid;grid-template-columns:1fr 2fr;gap:10px;padding:10px 0 calc(10px + env(safe-area-inset-bottom));background:linear-gradient(transparent,var(--bg) 25%)}
 /* email preview */
 .emailprev{background:#fff;color:#111827;border-radius:var(--radius);padding:14px;border:1px solid var(--line);overflow-x:auto}
+/* settings: notifications */
+.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.row3 form{margin:0}
+.sched.off{opacity:.65}.sched h3{margin-bottom:2px}
+.tag{display:inline-block;font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em;padding:2px 7px;border-radius:999px;background:var(--line);color:var(--ink)}
+.tag-sent{background:#d1fae5;color:#065f46}.tag-skipped{background:#e5e7eb;color:#374151}.tag-failed{background:#fee2e2;color:#991b1b}.tag-test{background:#dbeafe;color:#1e40af}.tag-sending{background:#fef3c7;color:#92400e}
+.crew-row .tot{order:0}
+[hidden]{display:none!important}

@@ -1,21 +1,22 @@
 # EOD Log: end of day crew log
 
 A small self-hosted web app that replaces the daily "Reply to this email with your hours" thread.
-Crew log each job day from their phone (project, who worked, everyone's own times, meals, expenses with receipt photos, vehicle, media, gear, notes),
-everything is stored in a local SQLite database on the NAS, and managers get one **weekly summary email** with hours per person and per job, and what to reimburse.
+Crew log each job day from their phone (project, who worked, everyone's own start and stop times, expenses with receipt photos, vehicle, media, gear, notes),
+everything is stored in a local SQLite database on the NAS, and managers get **summary emails on the schedule you choose** (daily, weekdays or weekly; as many as you like, each with its own recipients) with hours per person and per job, and what to reimburse. No EODs in the period = no email.
 
 Built for film shoots, AV installs and live events. Mobile first: big tap targets, the phone's own date and time pickers, a floating **+ New EOD** button, add-to-home-screen (PWA).
 
-**Status:** working v1, tested in Docker on a test machine with a fake mail server (see "Testing"). Not yet deployed on the NAS. No real email has been sent.
+**Status:** v2: start/stop hours, multiple notification schedules, and the time-saving fix. Tested in Docker with a fake mail server and in emulated iPhone/Android browsers (see "Testing"). No real email has been sent by the developer.
 
-| Week view | New EOD | Entry with receipt | Weekly email |
-|---|---|---|---|
-| ![week](preview/01-week.png) | ![new](preview/04-new-eod-filled.png) | ![detail](preview/05-entry-detail.png) | ![email](preview/07-summary-email.png) |
+| Week view | New EOD | Entry with receipt | Notifications | Summary email |
+|---|---|---|---|---|
+| ![week](preview/01-week.png) | ![new](preview/04-new-eod-filled.png) | ![detail](preview/05-entry-detail.png) | ![settings](preview/06-settings.png) | ![email](preview/07-summary-email.png) |
 
 ## What it does
 
 - **+ New EOD** (floating button on phones): job / project, date, job type (Film shoot, AV install, Live event, Edit / DIT, Other).
-- **Crew & hours, per person.** Each person gets their own Start, Wrap and any number of meal breaks, plus optional Leave shop, On set, Wheels up, Return to shop, role, Edit/DIT hours, and "hours, if not using times" for someone who just knows their total.
+- **Crew & hours, per person.** Each person gets their own **Start** and **Stop**, and that's what makes the hours. Meal breaks are off by default: tap **+ Add meal break** for anyone who took one.
+  A fold-out holds the optional extras: **On site / set** and **Off site** times (shown as a secondary on-site hours figure), Leave shop, Return to shop, role, Edit/DIT hours, a note, and "hours, if not using start/stop" for someone who just knows their total.
   Hours are worked out live as you type. **Add crew** starts the new person with the first person's times, and **Copy times to everyone** syncs them.
 - **The rest of the old email** sits in fold-away sections so the quick path stays short: client, location, crew chief, time zone; expenses and receipts; vehicle, miles and tolls; # media taken and used; equipment requested by the client and equipment taken, provided and used; issues and damage; notes.
 - **Expenses**: one line per receipt with amount, category, who paid, and **Company card** or **Personal (reimburse)**. Each line takes photos (camera or library) or PDFs. Big phone photos are shrunk in the browser to about 2000 px JPEG before upload, so uploads are fast and the NAS stays small.
@@ -23,19 +24,20 @@ Built for film shoots, AV installs and live events. Mobile first: big tap target
 - **Week view**: a week navigator with a date picker, totals (EODs, crew hours, expenses, to reimburse), hours by person, and entry cards grouped by day.
 - **List view**: search (job, client, location, crew, notes) and filters (job type, person, date range), as cards.
 - **Entry page**: every time per person, receipts as thumbnails, plus Edit, Duplicate and Delete (admin).
-- **Weekly summary email** to managers (default **Monday 08:00 Eastern**, covering the previous Monday to Sunday). It has totals, hours by person (with Edit/DIT and the amount to reimburse), jobs, every EOD with a link, and an expense list that flags missing receipts. Receipts can be attached as files if you want.
-  Settings has an in-app **preview** and a **Send test now** button.
+- **Email notifications** (Settings, admin): add as many as you want. Each has a name, its own recipients, **how often** (every day, weekdays, or weekly on a chosen day), the send time and time zone, an on/off switch, and an option to attach receipts.
+  Each email has totals, hours by person (with Edit/DIT and the amount to reimburse), jobs, every EOD with a link, and an expense list that flags missing receipts.
+  **If there are no EODs in the period, nothing is sent**; it's logged as *skipped*. Each notification has **Preview** and **Send test**, and Settings shows a notification log.
 - **CSV export** of hours (one row per person per day) and expenses, for payroll or spreadsheets.
 
 ### How hours are counted
 
-- **Hours** = from the first time entered (Leave shop, else On set, else Start) to the last (Return to shop, else Wheels up, else Wrap), **minus meal breaks**. So if someone enters travel times they get shop-to-shop. If not, it's start to wrap.
-- The entry page also shows **On site (start to wrap)** when travel times exist.
-- A time earlier than the one before it counts as after midnight (a 3pm to 2am event works).
+- **Hours = Stop − Start − any meal breaks entered.** No meal entered = nothing deducted.
+- Stop earlier than Start counts as past midnight (6pm to 2am = 8 h).
+- On site / Off site, Leave shop and Return to shop are for the record only and **never change hours**. When On site and Off site are both filled in, the entry also shows **on-site hours**.
 - If "hours, if not using times" is filled in, it wins.
 - Edit/DIT hours are tracked separately and shown next to the hours, not added to them.
 
-Want a different rule (for example, travel not paid)? It's one function: `public/hours.js` (shared by the browser and the server, with tests in `test/hours.test.js`).
+Want a different rule? It's one function: `public/hours.js` (shared by the browser and the server, with tests in `test/hours.test.js`).
 
 ## Sign-in and passwords
 
@@ -55,7 +57,7 @@ Needs Docker with the Compose plugin (Synology Container Manager, QNAP Container
 # first time only: clone (the repo is private, so git needs credentials; see "Git access on the NAS" below)
 git clone https://github.com/moviemakr1620/eod-log.git eod-log
 cd eod-log
-cp .env.example .env        # then edit: APP_PASSWORD, ADMIN_PASSWORD, PUBLIC_URL, SMTP_*, MANAGER_EMAILS
+cp .env.example .env        # then edit: APP_PASSWORD, ADMIN_PASSWORD, PUBLIC_URL, SMTP_*
 docker compose build
 docker compose up -d
 docker compose logs -f      # should say: listening on :8080
@@ -132,15 +134,34 @@ Because the repo is private, pick one:
 - **GitHub CLI:** `gh auth login`, then `gh repo clone moviemakr1620/eod-log eod-log`.
 - **Personal access token:** a fine-grained token with read-only *Contents* access to this repo, used as the password when git asks. Never put it in a file in the repo.
 
-## Weekly summary email setup
+## Email notifications setup
 
-1. Set the SMTP variables (below) and restart the container (`docker compose up -d`).
+1. Set the SMTP variables (below) and restart the container (`docker compose up -d`, or *Update the stack* in Portainer).
    - **Gmail / Google Workspace:** `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, `SMTP_USER=<the account>`, `SMTP_PASS=<an App Password>` (needs 2-step verification; a normal password won't work), `SMTP_FROM="EOD Log <that address>"`.
    - **Microsoft 365:** `smtp.office365.com`, port 587. SMTP AUTH has to be enabled for that mailbox.
    - **The NAS's own mail relay:** use its host and port. If it has a self-signed certificate, set `SMTP_TLS_REJECT_UNAUTHORIZED=false`.
-2. Open **Settings** (admin password), enter the manager emails, then check the day, time and time zone. Those values are saved in the database. The `MANAGER_EMAILS` / `SUMMARY_*` variables are only the starting values.
-3. Click **Preview last week's email**, then **Send test now** with your own address.
-4. Automatic send: the app checks every 30 seconds and sends **once per week**, on the set day at or after the set time, as long as the container is running that day. "Last run" in Settings shows the result. If a send fails, it is not retried automatically; use **Send test now** with the address empty to resend to the managers.
+2. Open **Settings** (admin password) > **Email notifications** > **Add**, or edit the one that's there. Notifications are saved in the database, not in env vars.
+3. Use **Preview**, then **Send test** (on the edit page you can send the test to just yourself).
+
+**What each frequency covers**
+
+| How often | "Covers" option | Each email covers |
+|---|---|---|
+| Every day | That day (send in the evening, e.g. 19:00) | the send day |
+| Every day | The day before (send in the morning) | the previous day |
+| Weekdays (Mon–Fri) | That day | the send day; Monday's also includes Sat and Sun |
+| Weekdays (Mon–Fri) | The day before | the previous day; Monday's covers Fri–Sun |
+| Once a week (pick the day) | n/a | the previous Monday–Sunday |
+
+**How sending works**
+- The app checks every 30 seconds. On a send day at or after the send time, it decides once for that notification and period: **no EODs = skipped** (nothing sent, logged), otherwise it sends.
+- Each notification and period is recorded in the database *before* sending, so a restart or a second check can never send it twice.
+- The decision is made at send time: an EOD added later for an already-handled period is not emailed automatically. Use **Send test** if you need it.
+- Adding or saving a notification after today's send time doesn't fire right away. It starts with the next send.
+- A failed send (e.g. a wrong SMTP password) is logged as *failed* and not retried automatically, so it can't spam anyone. Fix it, then use **Send test**.
+- It only sends while the container is running. If the NAS is off at the send time, it sends when it comes back up later that same day.
+
+**Upgrading from the first version:** the old single weekly summary (its manager emails, day, time and receipts setting) becomes the first notification, "Weekly summary". If it already went out this week, it isn't sent again. The `MANAGER_EMAILS` and `SUMMARY_*` variables are now only used once, to create that first notification on a brand-new install.
 
 ## Environment variables (every one)
 
@@ -159,12 +180,12 @@ Because the repo is private, pick one:
 | `SMTP_USER`, `SMTP_PASS` | empty | SMTP login. |
 | `SMTP_FROM` | `SMTP_USER` | From address, e.g. `"EOD Log <eod@company.com>"`. |
 | `SMTP_TLS_REJECT_UNAUTHORIZED` | `true` | `false` only for a relay with a self-signed cert. |
-| `MANAGER_EMAILS` | empty | Starting manager list (comma separated). Editable in Settings. |
-| `SUMMARY_ENABLED` | `true` | Starting value of "send automatically". |
-| `SUMMARY_DAY` | `1` | 0 = Sunday … 6 = Saturday. |
-| `SUMMARY_TIME` | `08:00` | 24-hour time. |
-| `SUMMARY_TIMEZONE` | `APP_TIMEZONE` | Time zone for the send time. |
-| `SUMMARY_ATTACH_RECEIPTS` | `false` | Attach receipt files (capped at 15 MB per email). |
+| `MANAGER_EMAILS` | empty | Fresh installs only: recipients for the first "Weekly summary" notification. After that, manage notifications in Settings. |
+| `SUMMARY_ENABLED` | `true` | Fresh installs only: first notification on/off. |
+| `SUMMARY_DAY` | `1` | Fresh installs only: its day, 0 = Sunday … 6 = Saturday. |
+| `SUMMARY_TIME` | `08:00` | Fresh installs only: its send time (24-hour). |
+| `SUMMARY_TIMEZONE` | `APP_TIMEZONE` | Fresh installs only: its time zone. |
+| `SUMMARY_ATTACH_RECEIPTS` | `false` | Fresh installs only: attach receipts (capped at 15 MB per email). |
 | `SESSION_DAYS` | `180` | How long a phone stays signed in. |
 | `SESSION_SECRET` | auto (stored in `/data`) | Cookie signing secret. |
 | `COOKIE_SECURE` | `auto` | `auto` = Secure cookie when reached over https. |
@@ -183,12 +204,14 @@ npm test             # unit tests for the hours maths
 
 ## Testing
 
-- `npm test`: unit tests for `public/hours.js` (meals, shop to shop, past midnight, typed-in hours).
+- `npm test`: unit tests for `public/hours.js` (start/stop, optional meals, overnight, travel times ignored, typed-in hours, time formats such as `07:30:00`, `7:30 PM`).
 - `scripts/e2e.mjs`: about 40 end-to-end checks against a running server. It signs in, creates entries with several crew on separate hours and with receipts, then checks the week and list views, search and filters, editing, deleting receipts, admin-only actions, settings and CSV.
   With `MAILPIT=` set, it also sends the summary to a [Mailpit](https://github.com/axllent/mailpit) catcher and checks the email, including attached receipts.
   `BASE=http://127.0.0.1:7240 APP_PASSWORD=... ADMIN_PASSWORD=... MAILPIT=http://127.0.0.1:8025 node scripts/e2e.mjs`
 - `scripts/screenshots.mjs`: phone-size (390×844) screenshots into `preview/`. It needs `puppeteer-core` installed outside the project and Chrome.
-- The weekly scheduler was tested by setting the send time to the current minute. It sent once and didn't repeat on the next check.
+- `scripts/browser-test.mjs`: drives the real form in **WebKit (iPhone 13)** and **Chromium (Pixel 7)** with Playwright. It covers add, edit, several crew, overnight, meals, a crew row with no name, and times with seconds. The simplest way to run it:
+  `docker run --rm --network host -v $PWD:/w -w /w mcr.microsoft.com/playwright:v1.65.1-noble bash -c "npm i --no-save playwright@1.65.1 && APP_PASSWORD=... node scripts/browser-test.mjs"`
+- `scripts/notify-test.mjs`: scheduler check (about 3 minutes) with Mailpit. A daily notification with no EODs sends nothing and is logged as skipped; with an EOD, two notifications send to their own recipients. A container restart afterwards sends no duplicates (checked by hand).
 
 ## Project layout
 
@@ -197,7 +220,7 @@ npm test             # unit tests for the hours maths
 | `src/server.js` | Express routes: pages, uploads, auth, summary, CSV. |
 | `src/store.js`, `src/db.js` | SQLite schema and queries (better-sqlite3). |
 | `src/views.js` | Server-rendered HTML (escaped by default). |
-| `src/summary.js`, `src/mailer.js` | Weekly summary data, email HTML/text, SMTP, scheduler. |
+| `src/summary.js`, `src/mailer.js` | Summary data, email HTML/text, SMTP, notification schedules and the scheduler. |
 | `src/auth.js` | Shared-password sign-in, signed cookies, admin elevation. |
 | `public/` | `app.css`, `form.js` (EOD form), `hours.js` (shared hours maths), icons and manifest. |
 | `test/`, `scripts/` | Unit test, fixtures, end-to-end and screenshot scripts. |

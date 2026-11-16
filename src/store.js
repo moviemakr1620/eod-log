@@ -3,11 +3,11 @@ const path = require('path');
 const { db } = require('./db');
 const cfg = require('./config');
 const H = require('../public/hours.js');
-const { str, num, timeStr, isDate, JOB_TYPES, EXPENSE_CATS } = require('./util');
+const { str, num, isDate, JOB_TYPES, EXPENSE_CATS } = require('./util');
 
 const ENTRY_FIELDS = ['date', 'job', 'job_type', 'client', 'location', 'tz', 'crew_chief', 'vehicle', 'vehicle_kind', 'driver', 'miles', 'tolls',
   'media_taken', 'media_used', 'equip_requested', 'equip_provided', 'issues', 'notes'];
-const TIME_FIELDS = ['leave_shop', 'on_set', 'start', 'wrap', 'wheels_up', 'return_shop'];
+const TIME_FIELDS = ['leave_shop', 'on_set', 'start', 'stop', 'wheels_up', 'return_shop'];
 
 function parseJSON(s, d) { try { const v = JSON.parse(s); return v == null ? d : v; } catch { return d; } }
 
@@ -29,21 +29,28 @@ function normalise(body) {
   if (!e.date) errors.push('Date is required');
   if (!e.job) errors.push('Job / project name is required');
 
-  const crewIn = Array.isArray(parseJSON(body.crew_json, [])) ? parseJSON(body.crew_json, []) : [];
+  let crewIn = parseJSON(body.crew_json, []);
+  if (!Array.isArray(crewIn)) crewIn = [];
   const crew = [];
-  crewIn.slice(0, 60).forEach((c) => {
-    const name = str(c && c.name, 120);
-    if (!name) return;
-    const row = { name, role: str(c.role, 120), note: str(c.note, 1000), hours_override: num(c.hours_override), edit_hours: num(c.edit_hours) };
-    TIME_FIELDS.forEach((f) => { row[f] = timeStr(c[f]); });
-    row.meals = (Array.isArray(c.meals) ? c.meals : []).slice(0, 6)
-      .map((m) => ({ start: timeStr(m && m.start), end: timeStr(m && m.end) }))
+  crewIn.slice(0, 60).forEach((c, i) => {
+    if (!c || typeof c !== 'object') return;
+    if (c.stop === undefined && c.wrap !== undefined) c.stop = c.wrap; // old field name
+    const times = {};
+    TIME_FIELDS.forEach((f) => { times[f] = H.norm(c[f]); });
+    const meals = (Array.isArray(c.meals) ? c.meals : []).slice(0, 6)
+      .map((m) => ({ start: H.norm(m && m.start), end: H.norm(m && m.end) }))
       .filter((m) => m.start || m.end);
+    const name = str(c.name, 120);
+    if (!name) {
+      if (Object.values(times).some(Boolean) || H.num(c.hours_override) !== null) errors.push(`Crew row ${i + 1} has times but no name`);
+      return;
+    }
+    const row = { name, role: str(c.role, 120), note: str(c.note, 1000), hours_override: H.num(c.hours_override), edit_hours: H.num(c.edit_hours), ...times, meals };
     const r = H.compute(row);
-    Object.assign(row, { total_min: r.totalMin, work_min: r.workMin, meal_min: r.mealMin, paid_min: r.paidMin });
+    Object.assign(row, { total_min: r.totalMin, onsite_min: r.onSiteMin, meal_min: r.mealMin, paid_min: r.paidMin });
     crew.push(row);
   });
-  if (!crew.length) errors.push('Add at least one crew member');
+  if (!crew.length && !errors.some((e) => e.startsWith('Crew row'))) errors.push('Add at least one crew member');
 
   const expIn = Array.isArray(parseJSON(body.expenses_json, [])) ? parseJSON(body.expenses_json, []) : [];
   const expenses = [];
@@ -64,8 +71,8 @@ function normalise(body) {
 const now = () => new Date().toISOString();
 
 function insertCrew(entryId, crew) {
-  const st = db.prepare(`INSERT INTO crew (entry_id,pos,name,role,leave_shop,on_set,start,wrap,wheels_up,return_shop,meals,hours_override,edit_hours,total_min,work_min,meal_min,paid_min,note)
-    VALUES (@entry_id,@pos,@name,@role,@leave_shop,@on_set,@start,@wrap,@wheels_up,@return_shop,@meals,@hours_override,@edit_hours,@total_min,@work_min,@meal_min,@paid_min,@note)`);
+  const st = db.prepare(`INSERT INTO crew (entry_id,pos,name,role,leave_shop,on_set,start,stop,wheels_up,return_shop,meals,hours_override,edit_hours,total_min,onsite_min,meal_min,paid_min,note)
+    VALUES (@entry_id,@pos,@name,@role,@leave_shop,@on_set,@start,@stop,@wheels_up,@return_shop,@meals,@hours_override,@edit_hours,@total_min,@onsite_min,@meal_min,@paid_min,@note)`);
   crew.forEach((c, i) => st.run({ ...c, entry_id: entryId, pos: i, meals: JSON.stringify(c.meals) }));
 }
 

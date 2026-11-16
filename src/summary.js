@@ -5,8 +5,8 @@ const store = require('./store');
 const H = require('../public/hours.js');
 const { esc, addDays, rangeLabel, prettyDate, money, tzShort } = require('./util');
 
-function build(weekStartDate) {
-  const from = weekStartDate, to = addDays(weekStartDate, 6);
+function build(from, to) {
+  if (!to) to = addDays(from, 6); // (weekStart) form
   const entries = store.range(from, to);
   const people = {}, jobs = {};
   const person = (n) => (people[n] = people[n] || { name: n, days: new Set(), paid: 0, edit: 0, owed: 0, companyCard: 0, miles: 0, entries: 0 });
@@ -31,7 +31,7 @@ function build(weekStartDate) {
   });
   const list = (o) => Object.values(o);
   return {
-    from, to, label: rangeLabel(from, to), entries, expenses,
+    from, to, label: from === to ? prettyDate(from, true) : rangeLabel(from, to), entries, expenses,
     people: list(people).map((p) => ({ ...p, days: p.days.size })).sort((a, b) => b.paid - a.paid || a.name.localeCompare(b.name)),
     jobs: list(jobs).map((j) => ({ ...j, dates: [...j.dates].sort(), crew: [...j.crew] })).sort((a, b) => a.dates[0].localeCompare(b.dates[0])),
     totals: { entries: entries.length, paid: totalPaid, edit: totalEdit, expenses: totalExp, owed: totalOwed },
@@ -41,7 +41,8 @@ function build(weekStartDate) {
 function baseUrl() { return cfg.PUBLIC_URL || `http://localhost:${cfg.PORT}`; }
 
 /** Email-safe HTML (tables + inline styles) */
-function emailHtml(s) {
+function emailHtml(s, title) {
+  title = title || 'Summary';
   const base = baseUrl();
   const th = 'style="text-align:left;padding:6px 8px;border-bottom:2px solid #e5e7eb;font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:.03em"';
   const td = 'style="padding:6px 8px;border-bottom:1px solid #f0f0f0;font-size:14px;vertical-align:top"';
@@ -51,13 +52,13 @@ function emailHtml(s) {
   const stat = (label, val) => `<td style="padding:8px 4px;background:#f3f4f6;border-radius:8px;text-align:center"><div style="font-size:16px;font-weight:700;color:#111827;white-space:nowrap">${esc(val)}</div><div style="font-size:11px;color:#6b7280">${esc(label)}</div></td>`;
 
   let out = `<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:720px;margin:0 auto;color:#111827">
-<h1 style="font-size:20px;margin:0 0 4px">${esc(cfg.APP_NAME)}: weekly summary</h1>
+<h1 style="font-size:20px;margin:0 0 4px">${esc(cfg.APP_NAME)}: ${esc(title)}</h1>
 <div style="color:#6b7280;font-size:14px;margin-bottom:16px">${esc(s.label)}</div>
 <table role="presentation" cellspacing="4" cellpadding="0" style="width:100%;border-collapse:separate;table-layout:fixed"><tr>
 ${stat('EODs', s.totals.entries)}${stat('Crew hours', H.dec(s.totals.paid) || '0')}${stat('Edit/DIT hrs', H.dec(s.totals.edit) || '0')}${stat('Expenses', money(s.totals.expenses))}${stat('To reimburse', money(s.totals.owed))}
 </tr></table>`;
 
-  if (!s.entries.length) return out + `<p style="font-size:14px">No EODs were logged this week.</p></div>`;
+  if (!s.entries.length) return out + `<p style="font-size:14px">No EODs were logged in this period. (Scheduled emails are skipped when there's nothing to report.)</p></div>`;
 
   out += `<h2 ${h2}>Hours by person</h2><table cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse"><tr><th ${th}>Name</th><th ${th}>Days</th><th ${th} align="right">Hours</th><th ${th} align="right">Edit/DIT</th><th ${th} align="right">Reimburse</th></tr>`;
   s.people.forEach((p) => {
@@ -78,8 +79,8 @@ ${stat('EODs', s.totals.entries)}${stat('Crew hours', H.dec(s.totals.paid) || '0
 <div style="font-size:15px;font-weight:600">${link(e.id, e.job)} <span style="font-weight:400;color:#6b7280;font-size:13px">${esc(prettyDate(e.date))}${e.job_type ? ' · ' + esc(e.job_type) : ''}${e.location ? ' · ' + esc(e.location) : ''}</span></div>
 <table cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse;margin-top:6px">`;
     e.crew.forEach((c) => {
-      const times = [c.leave_shop && 'Shop ' + H.ampm(c.leave_shop), c.start && 'Start ' + H.ampm(c.start),
-        ...(c.meals || []).map((m) => `Meal ${H.ampm(m.start)}–${H.ampm(m.end)}`), c.wrap && 'Wrap ' + H.ampm(c.wrap), c.return_shop && 'Return ' + H.ampm(c.return_shop)].filter(Boolean).join(' · ');
+      const times = [c.start || c.stop ? `${H.ampm(c.start) || '?'}–${H.ampm(c.stop) || '?'}` : '',
+        ...(c.meals || []).map((m) => `meal ${H.ampm(m.start)}–${H.ampm(m.end)}`), c.on_set && 'on site ' + H.ampm(c.on_set) + (c.wheels_up ? '–' + H.ampm(c.wheels_up) : '')].filter(Boolean).join(' · ');
       out += `<tr><td style="padding:3px 0;font-size:13px">${esc(c.name)}${c.role ? ` <span style="color:#6b7280">(${esc(c.role)})</span>` : ''}<div style="font-size:12px;color:#6b7280">${esc(times)}${e.tz ? ' ' + esc(tzShort(e.tz)) : ''}</div></td><td style="padding:3px 0;font-size:13px;text-align:right;white-space:nowrap">${H.dec(c.paid_min)} h${c.edit_hours ? ` +${c.edit_hours} edit` : ''}</td></tr>`;
     });
     out += `</table>`;
@@ -96,13 +97,13 @@ ${stat('EODs', s.totals.entries)}${stat('Crew hours', H.dec(s.totals.paid) || '0
     });
     out += `</table>`;
   }
-  out += `<p style="font-size:12px;color:#9ca3af;margin-top:24px">Hours are shop-to-shop when travel times were entered, otherwise start to wrap, minus meal breaks (or the hours a person typed in). Sent by ${esc(cfg.APP_NAME)} · <a href="${esc(base)}/?week=${s.from}" style="color:#9ca3af">open this week</a></p></div>`;
+  out += `<p style="font-size:12px;color:#9ca3af;margin-top:24px">Hours = stop minus start, minus any meal breaks entered (or the hours a person typed in). Sent by ${esc(cfg.APP_NAME)} · <a href="${esc(base)}/?week=${s.from}" style="color:#9ca3af">open in the app</a></p></div>`;
   return out;
 }
 
-function emailText(s) {
-  const lines = [`${cfg.APP_NAME} weekly summary: ${s.label}`, '', `EODs: ${s.totals.entries} | Crew hours: ${H.dec(s.totals.paid) || 0} | Edit/DIT: ${H.dec(s.totals.edit) || 0} | Expenses: ${money(s.totals.expenses)} | To reimburse: ${money(s.totals.owed)}`, ''];
-  if (!s.entries.length) return lines.concat('No EODs were logged this week.').join('\n');
+function emailText(s, title) {
+  const lines = [`${cfg.APP_NAME} ${title || 'summary'}: ${s.label}`, '', `EODs: ${s.totals.entries} | Crew hours: ${H.dec(s.totals.paid) || 0} | Edit/DIT: ${H.dec(s.totals.edit) || 0} | Expenses: ${money(s.totals.expenses)} | To reimburse: ${money(s.totals.owed)}`, ''];
+  if (!s.entries.length) return lines.concat('No EODs were logged in this period.').join('\n');
   lines.push('HOURS BY PERSON');
   s.people.forEach((p) => lines.push(`- ${p.name}: ${H.dec(p.paid) || 0} h over ${p.days} day(s)${p.edit ? `, ${H.dec(p.edit)} edit` : ''}${p.owed ? `, reimburse ${money(p.owed)}` : ''}${p.miles ? `, ${p.miles} personal mi` : ''}`));
   lines.push('', 'JOBS');

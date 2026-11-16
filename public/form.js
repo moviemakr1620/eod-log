@@ -5,7 +5,7 @@
   var crewList = document.getElementById('crew-list');
   var expList = document.getElementById('exp-list');
   var H = window.EODHours;
-  var TIMES = ['leave_shop', 'on_set', 'start', 'wrap', 'wheels_up', 'return_shop'];
+  var TIMES = ['start', 'stop', 'on_set', 'wheels_up', 'leave_shop', 'return_shop'];
   var seq = 0;
   var busy = 0;
   var deleteReceipts = [];
@@ -25,32 +25,40 @@
   }
   function addCrew(c, focus) {
     c = c || {}; var id = ++seq;
-    var travelOpen = c.leave_shop || c.on_set || c.wheels_up || c.return_shop || c.role || c.hours_override != null || c.edit_hours != null || c.note;
+    if (c.stop === undefined && c.wrap !== undefined) c.stop = c.wrap; // drafts from the old form
+    var moreOpen = c.on_set || c.wheels_up || c.leave_shop || c.return_shop || c.role || c.hours_override != null && c.hours_override !== '' || c.edit_hours != null && c.edit_hours !== '' || c.note;
     var row = el('<div class="crew-row" data-id="' + id + '">' +
       '<div class="head"><label>Name<input data-f="name" list="dl-people" autocomplete="off" autocapitalize="words" value="' + esc(c.name) + '" placeholder="Crew member"></label>' +
       '<button type="button" class="rm" aria-label="Remove this person">×</button></div>' +
-      '<div class="row2">' + timeInput('start', 'Start', c.start) + timeInput('wrap', 'Wrap', c.wrap) + '</div>' +
-      '<div class="meals stack"></div><button type="button" class="btn addmeal">+ Meal break</button>' +
-      '<details' + (travelOpen ? ' open' : '') + '><summary>Travel times, role, edit/DIT</summary><div class="stack">' +
-      '<div class="row2">' + timeInput('leave_shop', 'Leave shop', c.leave_shop) + timeInput('on_set', 'On set', c.on_set) + '</div>' +
-      '<div class="row2">' + timeInput('wheels_up', 'Wheels up', c.wheels_up) + timeInput('return_shop', 'Return to shop', c.return_shop) + '</div>' +
+      '<div class="row2">' + timeInput('start', 'Start', c.start) + timeInput('stop', 'Stop', c.stop) + '</div>' +
+      '<div class="tot"><span>Hours <span class="muted small" data-detail></span></span><b data-total>–</b></div><div class="warn" data-warn></div>' +
+      '<div class="meals stack"></div><button type="button" class="btn addmeal">+ Add meal break</button>' +
+      '<details' + (moreOpen ? ' open' : '') + '><summary>On site time, role, edit/DIT, more</summary><div class="stack">' +
+      '<p class="small muted">These are for the record. They don\'t change hours.</p>' +
+      '<div class="row2">' + timeInput('on_set', 'On site / set', c.on_set) + timeInput('wheels_up', 'Off site', c.wheels_up) + '</div>' +
+      '<div class="row2">' + timeInput('leave_shop', 'Leave shop', c.leave_shop) + timeInput('return_shop', 'Return to shop', c.return_shop) + '</div>' +
       '<div class="row2"><label>Role<input data-f="role" list="dl-roles" autocomplete="off" value="' + esc(c.role) + '" placeholder="e.g. A1, Camera"></label>' +
       '<label>Edit / DIT hrs<input data-f="edit_hours" inputmode="decimal" value="' + esc(c.edit_hours) + '" placeholder="0"></label></div>' +
-      '<label>Hours, if not using times<input data-f="hours_override" inputmode="decimal" value="' + esc(c.hours_override) + '" placeholder="Leave empty to use the times"></label>' +
+      '<label>Hours, if not using start/stop<input data-f="hours_override" inputmode="decimal" value="' + esc(c.hours_override) + '" placeholder="Leave empty to use start/stop"></label>' +
       '<label>Note for this person<input data-f="note" value="' + esc(c.note) + '"></label>' +
-      '</div></details>' +
-      '<div class="tot"><span>Hours <span class="muted small" data-detail></span></span><b data-total>–</b></div><div class="warn" data-warn></div></div>');
+      '</div></details></div>');
     var meals = q(row, '.meals');
-    (c.meals && c.meals.length ? c.meals : []).forEach(function (m) { meals.appendChild(el(mealHtml(m))); });
+    (c.meals || []).forEach(function (m) { if (m && (m.start || m.end)) meals.appendChild(el(mealHtml(m))); });
+    syncMealBtn(row);
     crewList.appendChild(row);
     updateCrew(row);
     if (focus) q(row, '[data-f=name]').focus();
     return row;
   }
+  function syncMealBtn(row) { q(row, '.addmeal').textContent = q(row, '.meal') ? '+ Another meal break' : '+ Add meal break'; }
   function readCrew(row) {
     var c = { meals: [] };
-    qa(row, '[data-f]').forEach(function (i) { c[i.getAttribute('data-f')] = i.value.trim(); });
-    qa(row, '.meal').forEach(function (m) { c.meals.push({ start: q(m, '[data-m=start]').value, end: q(m, '[data-m=end]').value }); });
+    qa(row, '[data-f]').forEach(function (i) {
+      var f = i.getAttribute('data-f'), v = i.value.trim();
+      c[f] = i.type === 'time' ? (H.norm(v) || '') : v;
+      if (i.type === 'time' && v && !H.norm(v)) c._bad = (c._bad || []).concat(f);
+    });
+    qa(row, '.meal').forEach(function (m) { c.meals.push({ start: H.norm(q(m, '[data-m=start]').value) || '', end: H.norm(q(m, '[data-m=end]').value) || '' }); });
     return c;
   }
   function updateCrew(row) {
@@ -58,7 +66,7 @@
     q(row, '[data-total]').textContent = r.paidMin == null ? '–' : H.fmt(r.paidMin) + ' (' + H.dec(r.paidMin) + ' h)';
     var bits = [];
     if (r.overridden) bits.push('typed in');
-    else if (r.totalMin != null && r.workMin != null && r.totalMin !== r.workMin) bits.push('shop to shop · ' + H.dec(r.workMin) + ' on site');
+    if (r.onSiteMin != null) bits.push(H.dec(r.onSiteMin) + ' h on site');
     if (r.mealMin) bits.push(H.dec(r.mealMin) + ' h meal');
     q(row, '[data-detail]').textContent = bits.length ? '(' + bits.join(', ') + ')' : '';
     q(row, '[data-warn]').textContent = r.warnings.join('. ');
@@ -69,7 +77,9 @@
     qa(crewList, '.crew-row').forEach(function (row) { var r = H.compute(readCrew(row)); if (r.paidMin) { sum += r.paidMin; n++; } });
     document.getElementById('crew-total').textContent = n ? H.dec(sum) + ' crew hrs' : '';
   }
-  crewList.addEventListener('input', function (ev) { var row = ev.target.closest('.crew-row'); if (row) updateCrew(row); });
+  function onEdit(ev) { var row = ev.target.closest && ev.target.closest('.crew-row'); if (row) updateCrew(row); }
+  crewList.addEventListener('input', onEdit);
+  crewList.addEventListener('change', onEdit); // iOS time wheels fire change
   crewList.addEventListener('click', function (ev) {
     var row = ev.target.closest('.crew-row'); if (!row) return;
     if (ev.target.closest('.rm')) {
@@ -77,9 +87,9 @@
       else { row.remove(); updateTotals(); }
       saveDraft();
     } else if (ev.target.closest('.addmeal')) {
-      var m = el(mealHtml({})); q(row, '.meals').appendChild(m); q(m, 'input').focus(); updateCrew(row);
+      var m = el(mealHtml({})); q(row, '.meals').appendChild(m); syncMealBtn(row); q(m, 'input').focus(); updateCrew(row);
     } else if (ev.target.closest('.rm-meal')) {
-      ev.target.closest('.meal').remove(); updateCrew(row); saveDraft();
+      ev.target.closest('.meal').remove(); syncMealBtn(row); updateCrew(row); saveDraft();
     }
   });
   function timesOf(row) { var c = readCrew(row), t = { meals: c.meals }; TIMES.forEach(function (f) { t[f] = c[f]; }); return t; }
@@ -87,6 +97,7 @@
     TIMES.forEach(function (f) { q(row, '[data-f=' + f + ']').value = t[f] || ''; });
     var meals = q(row, '.meals'); meals.innerHTML = '';
     t.meals.forEach(function (m) { meals.appendChild(el(mealHtml(m))); });
+    syncMealBtn(row);
     if (t.leave_shop || t.on_set || t.wheels_up || t.return_shop) q(row, 'details').open = true;
     updateCrew(row);
   }
@@ -176,7 +187,9 @@
 
   // ---------- collect + submit
   function collect() {
-    var crew = qa(crewList, '.crew-row').map(readCrew).filter(function (c) { return c.name; });
+    var all = qa(crewList, '.crew-row').map(readCrew);
+    var crew = all.filter(function (c) { return c.name; });
+    var nameless = all.filter(function (c) { return !c.name && TIMES.some(function (f) { return c[f]; }); }).length;
     var exps = qa(expList, '.exp-row').map(function (row) {
       var x = { key: row.getAttribute('data-key').slice(1) };
       if (row.getAttribute('data-id')) x.id = Number(row.getAttribute('data-id'));
@@ -186,14 +199,18 @@
       return x;
     });
     deleteReceipts = qa(expList, '[data-del-receipt]:checked').map(function (i) { return Number(i.getAttribute('data-del-receipt')); });
-    return { crew: crew, expenses: exps };
+    return { crew: crew, expenses: exps, nameless: nameless, bad: all.filter(function (c) { return c._bad; }).length };
   }
   form.addEventListener('submit', function (ev) {
     var data = collect();
     var job = form.elements.job, date = form.elements.date;
-    var problem = !job.value.trim() ? [job, 'Enter the job / project name.'] : !date.value ? [date, 'Pick a date.'] : !data.crew.length ? [q(crewList, '[data-f=name]'), 'Add at least one crew member name.'] : null;
+    var firstNameless = qa(crewList, '.crew-row').filter(function (r) { var c = readCrew(r); return !c.name && TIMES.some(function (f) { return c[f]; }); })[0];
+    var problem = !job.value.trim() ? [job, 'Enter the job / project name.'] : !date.value ? [date, 'Pick a date.']
+      : firstNameless ? [q(firstNameless, '[data-f=name]'), 'A crew row has times but no name. Add the name (or remove the row).']
+      : !data.crew.length ? [q(crewList, '[data-f=name]'), 'Add at least one crew member name.'] : null;
     if (problem) { ev.preventDefault(); alert(problem[1]); problem[0].focus(); return; }
     if (busy) { ev.preventDefault(); return; }
+    data.crew.forEach(function (c) { delete c._bad; });
     document.getElementById('crew_json').value = JSON.stringify(data.crew);
     document.getElementById('expenses_json').value = JSON.stringify(data.expenses);
     var d = form.querySelector('input[name=delete_receipts_json]') || form.appendChild(el('<input type="hidden" name="delete_receipts_json">'));

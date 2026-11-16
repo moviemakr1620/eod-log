@@ -1,0 +1,66 @@
+// Real-browser form test: WebKit (iPhone 13) and Chromium (Pixel 7). Needs the `playwright` package outside the project:
+//   TOOLS_DIR=/path/with/node_modules BASE=http://127.0.0.1:7240 APP_PASSWORD=... node scripts/browser-test.mjs
+// Easiest: run inside mcr.microsoft.com/playwright (see README "Testing").
+import { createRequire } from 'node:module';
+const require = createRequire(process.env.TOOLS_DIR ? process.env.TOOLS_DIR + '/' : import.meta.url);
+const { webkit, chromium, devices } = require('playwright');
+const BASE = process.env.BASE || 'http://127.0.0.1:7240';
+let fails = 0;
+const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) fails++; };
+
+for (const [name, bt, dev] of [['WebKit iPhone 13', webkit, devices['iPhone 13']], ['Chromium Pixel 7', chromium, devices['Pixel 7']]]) {
+  const b = await bt.launch(); const ctx = await b.newContext({ ...dev, timezoneId: 'America/New_York' }); const p = await ctx.newPage();
+  const errs = []; p.on('pageerror', (e) => errs.push(e.message));
+  const dialogs = []; p.on('dialog', (d) => { dialogs.push(d.message()); d.accept(); });
+  await p.goto(BASE + '/login'); await p.fill('input[name=name]', 'Jason'); await p.fill('input[name=password]', process.env.APP_PASSWORD);
+  await Promise.all([p.waitForURL(BASE + '/'), p.click('button[type=submit]')]);
+  await p.goto(BASE + '/new'); await p.evaluate(() => localStorage.clear()); await p.goto(BASE + '/new');
+  const row = (i) => p.locator('.crew-row').nth(i);
+  ok(await p.locator('.meal').count() === 0, `${name}: meals are off by default`);
+  ok(await row(0).locator('[data-f=name]').inputValue() === 'Jason', `${name}: first crew row pre-filled with my name`);
+  await p.fill('input[name=job]', `Browser test ${name}`);
+  await row(0).locator('[data-f=start]').fill('07:30');
+  await row(0).locator('[data-f=stop]').fill('18:00');
+  ok((await row(0).locator('[data-total]').textContent()).includes('10.5 h'), `${name}: live total 10.5 h from start/stop`);
+  await row(0).locator('.addmeal').click();
+  await row(0).locator('[data-m=start]').fill('12:00'); await row(0).locator('[data-m=end]').fill('12:30');
+  ok((await row(0).locator('[data-total]').textContent()).includes('10 h'), `${name}: meal deducted once added (10 h)`);
+  await p.locator('#add-crew').click();
+  await row(1).locator('[data-f=name]').fill('Maria Lopez');
+  ok(await row(1).locator('[data-f=start]').inputValue() === '07:30', `${name}: new crew row starts with the first row's times`);
+  await p.locator('#add-crew').click();
+  await row(2).locator('[data-f=name]').fill('Night Owl');
+  await row(2).locator('.meal .rm-meal').click();
+  await row(2).locator('[data-f=start]').fill('18:00'); await row(2).locator('[data-f=stop]').fill('02:00');
+  await row(2).locator('summary').click();
+  await row(2).locator('[data-f=on_set]').fill('17:30'); await row(2).locator('[data-f=wheels_up]').fill('02:30');
+  ok((await row(2).locator('[data-total]').textContent()).includes('8 h') && (await row(2).locator('[data-detail]').textContent()).includes('9 h on site'), `${name}: overnight 6pm-2am = 8 h, on-site 9 h shown separately`);
+  // a 4th row with times but no name must block saving with a message, not silently drop
+  await p.locator('#add-crew').click();
+  await p.locator('#save-btn').click();
+  await p.waitForTimeout(300);
+  ok(dialogs.some((d) => /no name/.test(d)) && /\/new$/.test(p.url()), `${name}: nameless row with times blocks save with a message`);
+  await row(3).locator('.rm').click();
+  await Promise.all([p.waitForURL(/\/e\/\d+/), p.locator('#save-btn').click()]);
+  let t = await p.locator('main').innerText();
+  ok(/Saved\. 3 crew, 28 h total/.test(t), `${name}: saved: 3 crew, 28 h total (10 + 10 + 8)`);
+  ok(t.includes('7:30am') && t.includes('6:00pm') && t.includes('2:00am') && /On-site hours/i.test(t) && /9 h/.test(t), `${name}: start/stop and on-site hours shown on the entry`);
+  // edit: change Maria's stop, save again
+  const id = /\/e\/(\d+)/.exec(p.url())[1];
+  await p.goto(`${BASE}/e/${id}/edit`);
+  ok(await row(1).locator('[data-f=stop]').inputValue() === '18:00' && await row(2).locator('[data-f=stop]').inputValue() === '02:00', `${name}: edit form loads saved times`);
+  await row(1).locator('[data-f=stop]').fill('20:00');
+  await Promise.all([p.waitForURL(/\/e\/\d+\?saved/), p.locator('#save-btn').click()]);
+  t = await p.locator('main').innerText();
+  ok(/30 h total/.test(t) && t.includes('8:00pm'), `${name}: edit saved (Maria to 8pm, 30 h total)`);
+  // a browser/device that reports seconds ("07:30:00") must still save
+  await p.goto(BASE + '/new'); await p.fill('input[name=job]', `Seconds ${name}`);
+  await p.evaluate(() => { const r = document.querySelector('.crew-row'); r.querySelector('[data-f=start]').value = '07:30:00'; r.querySelector('[data-f=stop]').value = '18:00:00.000'; r.querySelector('[data-f=stop]').dispatchEvent(new Event('change', { bubbles: true })); });
+  await Promise.all([p.waitForURL(/\/e\/\d+/), p.locator('#save-btn').click()]);
+  t = await p.locator('main').innerText();
+  ok(/10\.5 h total/.test(t) && t.includes('7:30am'), `${name}: time values with seconds save (10.5 h)`);
+  ok(!errs.length, `${name}: no JS errors ${errs.join(' | ')}`);
+  await b.close();
+}
+console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
+process.exit(fails ? 1 : 0);

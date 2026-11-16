@@ -2,7 +2,7 @@ const cfg = require('./config');
 const H = require('../public/hours.js');
 const { html, raw, prettyDate, rangeLabel, money, addDays, TIMEZONES, tzShort, tzLabel, JOB_TYPES, EXPENSE_CATS, WDL } = require('./util');
 
-const V = '9'; // static asset cache-buster
+const V = '10'; // static asset cache-buster
 const icon = {
   plus: raw('<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" fill="none"/></svg>'),
   left: raw('<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'),
@@ -119,15 +119,16 @@ function detail(req, { e, isAdmin }) {
   const general = e.receipts.filter((r) => !r.expense_id || !e.expenses.find((x) => x.id === r.expense_id));
   const vk = { company: 'Company vehicle', personal: 'Personal vehicle', rental: 'Rental' }[e.vehicle_kind];
   const body = html`<div class="detail-head"><a class="back" href="/?week=${require('./util').weekStart(e.date)}">${icon.left} Week</a></div>
+${req.query && req.query.saved ? html`<p class="alert info" role="status">Saved. ${e.crew.length} crew, ${hrs(e.paid_min)} total.</p>` : ''}
 <div class="card"><div class="entry-head"><h1>${e.job}</h1>${e.job_type ? html`<span class="badge ${typeClass(e.job_type)}">${e.job_type}</span>` : ''}</div>
 <div class="meta"><span>${prettyDate(e.date, true)}</span>${e.client ? html`<span>${e.client}</span>` : ''}${e.location ? html`<span>${icon.pin} ${e.location}</span>` : ''}${e.tz ? html`<span>${tzLabel(e.tz)}</span>` : ''}</div>
 ${e.crew_chief ? html`<p class="small">Crew chief: <b>${e.crew_chief}</b></p>` : ''}</div>
 <h2 class="sec">Crew &amp; hours <span class="muted">${hrs(e.paid_min)} total</span></h2>
 ${e.crew.map((c) => html`<div class="card crewcard"><div class="crew-top"><h3>${c.name}${c.role ? html` <span class="muted">· ${c.role}</span>` : ''}</h3><b class="hours">${hrs(c.paid_min)}</b></div>
-<dl class="times">${row('Leave shop', t(c.leave_shop))}${row('On set', t(c.on_set))}${row('Start', t(c.start))}
+<dl class="times">${row('Start', t(c.start))}${row('Stop', t(c.stop))}
 ${(c.meals || []).map((m, i) => row(`Meal ${c.meals.length > 1 ? i + 1 : ''}`, `${t(m.start) || '?'} – ${t(m.end) || '?'}`))}
-${row('Wrap', t(c.wrap))}${row('Wheels up', t(c.wheels_up))}${row('Return to shop', t(c.return_shop))}
-${c.leave_shop || c.return_shop || c.wheels_up ? [row('Shop to shop', hrs(c.total_min)), row('On site (start–wrap)', c.work_min != null ? hrs(c.work_min) : '')] : ''}
+${row('On site', t(c.on_set))}${row('Off site', t(c.wheels_up))}${row('On-site hours', c.onsite_min != null ? hrs(c.onsite_min) : '')}
+${row('Leave shop', t(c.leave_shop))}${row('Return to shop', t(c.return_shop))}
 ${c.hours_override != null ? row('Hours (typed in)', c.hours_override + ' h') : ''}${row('Edit / DIT', c.edit_hours ? c.edit_hours + ' h' : '')}</dl>
 ${c.note ? html`<p class="small">${c.note}</p>` : ''}</div>`)}
 ${e.expenses.length || general.length ? html`<h2 class="sec">Expenses <span class="muted">${money(e.expense_total)}</span></h2>
@@ -208,45 +209,77 @@ ${dl('dl-jobs', sugg.jobs)}${dl('dl-people', sugg.people)}${dl('dl-clients', sug
   return layout(req, { title: isNew ? 'New EOD' : 'Edit EOD', body, fab: false, scripts: ['/hours.js', '/form.js'] });
 }
 
-function settings(req, { st, smtp, msg, err, lastWeek }) {
+function settings(req, { smtp, schedules, log, msg, err }) {
+  const statusTag = (st) => html`<span class="tag tag-${st}">${st}</span>`;
+  const period = (r) => (String(r.period_from).startsWith('test:') ? 'test' : r.period_from === r.period_to ? prettyDate(r.period_from) : `${prettyDate(r.period_from)} – ${prettyDate(r.period_to)}`);
   const body = html`<h1>Settings</h1>
 ${msg ? html`<p class="alert info" role="status">${msg}</p>` : ''}${err ? html`<p class="alert" role="alert">${err}</p>` : ''}
-<form method="post" action="/settings" class="card stack"><h2>Weekly summary email</h2>
-<label>Manager emails <span class="muted">(comma or one per line)</span><textarea name="manager_emails" rows="3" autocapitalize="off" spellcheck="false">${st.manager_emails || ''}</textarea></label>
-<label class="check"><input type="checkbox" name="summary_enabled" value="1"${st.summary_enabled === '1' ? raw(' checked') : ''}> Send automatically every week</label>
-<div class="row2"><label>Day<select name="summary_day">${WDL.map((d, i) => html`<option value="${i}"${String(i) === String(st.summary_day) ? raw(' selected') : ''}>${d}</option>`)}</select></label>
-<label>Time<input type="time" name="summary_time" value="${st.summary_time}"></label></div>
-<label>Time zone<select name="summary_tz">${TIMEZONES.map(([v, l]) => html`<option value="${v}"${v === st.summary_tz ? raw(' selected') : ''}>${l}</option>`)}</select></label>
-<label class="check"><input type="checkbox" name="summary_attach" value="1"${st.summary_attach === '1' ? raw(' checked') : ''}> Attach receipt files (up to 15 MB total)</label>
-<p class="small muted">The email covers the previous Monday–Sunday. ${st.summary_last_result ? html`Last run: ${st.summary_last_result}` : 'Not sent yet.'}</p>
-<button class="btn primary big" type="submit">Save settings</button></form>
+<section class="stack"><div class="sec-head"><h2>Email notifications</h2><a class="btn primary" href="/settings/n/new">${icon.plus} Add</a></div>
+<p class="small muted">Each notification is its own email with its own recipients and schedule. A scheduled email is <b>skipped when there are no EODs</b> in its period.</p>
+${schedules.length ? schedules.map((x) => html`<div class="card sched${x.enabled ? '' : ' off'}">
+<div class="crew-top"><div><h3>${x.name}</h3><div class="small">${x.desc}</div></div>${x.enabled ? html`<span class="tag tag-sent">on</span>` : html`<span class="tag">off</span>`}</div>
+<p class="small ${x.recipients ? '' : 'warn'}">${x.recipients ? html`To: ${x.recipients}` : 'No recipients yet'}${x.attach ? ' · receipts attached' : ''}</p>
+${x.last ? html`<p class="small muted">Last: ${statusTag(x.last.status)} ${period(x.last)} · ${x.last.detail || ''}</p>` : html`<p class="small muted">Not run yet.</p>`}
+<div class="row3"><a class="btn" href="/settings/n/${x.id}">Edit</a><a class="btn" href="/summary?n=${x.id}">Preview</a>
+<form method="post" action="/settings/n/${x.id}/send"><button class="btn" type="submit" style="width:100%"${smtp.ok ? '' : raw(' disabled')}>Send test</button></form></div>
+</div>`) : html`<div class="card empty"><p>No notifications. Add one to email a summary daily or weekly.</p></div>`}
+</section>
 
 <div class="card stack"><h2>Email server</h2>
 ${smtp.ok ? html`<p class="small">SMTP: <b>${smtp.host}:${smtp.port}</b>${smtp.secure ? ' (TLS)' : ''}, from <b>${smtp.from}</b>${smtp.user ? ', with login' : ''}.</p>`
-    : html`<p class="alert">SMTP is not configured. Set <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_USER</code>, <code>SMTP_PASS</code> and <code>SMTP_FROM</code> in the container environment.</p>`}
-<a class="btn big" href="/summary?week=${lastWeek}">Preview last week's email</a>
-<form method="post" action="/summary/send" class="stack"><input type="hidden" name="week" value="${lastWeek}">
-<label>Send a test copy to<input type="email" name="to" placeholder="you@example.com" autocapitalize="off"></label>
-<button class="btn big" type="submit"${smtp.ok ? '' : raw(' disabled')}>Send test now (last week)</button>
-<p class="small muted">Leave the address empty to send to the manager list.</p></form></div>
+    : html`<p class="alert">SMTP is not configured, so nothing is sent. Set <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_USER</code>, <code>SMTP_PASS</code> and <code>SMTP_FROM</code> in the container environment.</p>`}
+<p class="small muted">"Send test" emails the notification's recipients the period it would cover right now, marked [TEST]. Open Edit to send a test to a different address.</p></div>
+
+${log.length ? html`<details class="card"><summary>Notification log <span class="muted">(${log.length})</span></summary>
+<table class="tbl"><thead><tr><th>When</th><th>Notification</th><th>Result</th></tr></thead><tbody>
+${log.map((r) => html`<tr><td class="small">${new Date(r.at).toLocaleString('en-US', { timeZone: cfg.TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</td><td class="small">${r.name}<div class="muted">${period(r)}</div></td><td class="small">${statusTag(r.status)} ${r.detail || ''}</td></tr>`)}
+</tbody></table></details>` : ''}
 
 <div class="card stack"><h2>Export</h2><p class="small"><a href="/export/hours.csv">All hours (CSV)</a> · <a href="/export/expenses.csv">All expenses (CSV)</a></p></div>
 <div class="card stack"><h2>This device</h2><p class="small">Signed in as <b>${(req.session && req.session.n) || 'no name'}</b>${req.session && req.session.r === 'admin' ? ' (admin)' : ''}.</p>
 <form method="post" action="/logout"><button class="btn big" type="submit">Sign out</button></form></div>`;
-  return layout(req, { title: 'Settings', active: 'settings', body });
+  return layout(req, { title: 'Settings', active: 'settings', body, fab: false });
 }
 
-function summaryPage(req, { s, emailHtml, isAdmin, smtpOk }) {
-  const body = html`<div class="weeknav"><a class="iconbtn" href="/summary?week=${addDays(s.from, -7)}" aria-label="Previous week">${icon.left}</a>
-<div class="weeklabel"><h1>Weekly email</h1><span class="muted small">${s.label}</span></div>
-<a class="iconbtn" href="/summary?week=${addDays(s.from, 7)}" aria-label="Next week">${icon.right}</a></div>
-${isAdmin && smtpOk ? html`<form method="post" action="/summary/send" class="row2 card"><input type="hidden" name="week" value="${s.from}"><input type="email" name="to" placeholder="Test address (empty = managers)" aria-label="Send to"><button class="btn primary" type="submit">Send now</button></form>` : ''}
+function scheduleForm(req, { sch, isNew }) {
+  const sel = (v, cur) => (String(v) === String(cur) ? raw(' selected') : '');
+  const body = html`<div class="detail-head"><a class="back" href="/settings">${icon.left} Settings</a></div>
+<h1>${isNew ? 'New notification' : 'Edit notification'}</h1>
+<form method="post" action="${isNew ? '/settings/n/new' : `/settings/n/${sch.id}`}" class="card stack" id="sched-form">
+<label>Name<input name="name" value="${sch.name}" required placeholder="e.g. Daily wrap report"></label>
+<label>Send to <span class="muted">(comma or one per line)</span><textarea name="recipients" rows="3" autocapitalize="off" spellcheck="false" placeholder="manager@company.com">${sch.recipients}</textarea></label>
+<label class="check"><input type="checkbox" name="enabled" value="1"${sch.enabled ? raw(' checked') : ''}> On</label>
+<label>How often<select name="frequency" data-freq>
+<option value="daily"${sel('daily', sch.frequency)}>Every day</option><option value="weekdays"${sel('weekdays', sch.frequency)}>Weekdays (Mon–Fri)</option><option value="weekly"${sel('weekly', sch.frequency)}>Once a week</option></select></label>
+<label data-show="weekly">Day<select name="weekday">${WDL.map((d, i) => html`<option value="${i}"${sel(i, sch.weekday)}>${d}</option>`)}</select></label>
+<label data-show="daily weekdays">Covers<select name="covers"><option value="today"${sel('today', sch.covers)}>That day (send in the evening)</option><option value="yesterday"${sel('yesterday', sch.covers)}>The day before (send in the morning)</option></select></label>
+<p class="small muted" data-show="weekly">A weekly email covers the previous Monday–Sunday.</p>
+<p class="small muted" data-show="weekdays">Monday's email also covers the weekend, so nothing is missed.</p>
+<div class="row2"><label>Send at<input type="time" name="send_time" value="${sch.send_time}" required></label>
+<label>Time zone<select name="tz">${TIMEZONES.map(([v, l]) => html`<option value="${v}"${sel(v, sch.tz)}>${l}</option>`)}</select></label></div>
+<label class="check"><input type="checkbox" name="attach" value="1"${sch.attach ? raw(' checked') : ''}> Attach receipt files (up to 15 MB)</label>
+<p class="small muted">No EODs in the period = no email. Every run is listed in the notification log on the Settings page.</p>
+<button class="btn primary big" type="submit">${isNew ? 'Add notification' : 'Save'}</button></form>
+${isNew ? '' : html`<form method="post" action="/settings/n/${sch.id}/send" class="card stack"><h2>Send a test</h2>
+<label>To <span class="muted">(empty = the recipients above)</span><input type="email" name="to" placeholder="you@example.com" autocapitalize="off"></label>
+<button class="btn big" type="submit">Send test now</button><a class="btn big" href="/summary?n=${sch.id}">Preview</a></form>
+<form method="post" action="/settings/n/${sch.id}/delete" data-confirm="Delete this notification?" class="actions"><button class="btn danger big" type="submit">Delete notification</button></form>`}`;
+  return layout(req, { title: 'Notification', active: 'settings', body, fab: false });
+}
+
+function summaryPage(req, { s, sch, title, emailHtml, isAdmin, smtpOk }) {
+  const days = Math.round((Date.parse(s.to) - Date.parse(s.from)) / 864e5) + 1;
+  const nav = (dir) => `/summary?${sch ? `n=${sch.id}&` : ''}from=${addDays(s.from, dir * days)}&to=${addDays(s.to, dir * days)}`;
+  const body = html`<div class="weeknav"><a class="iconbtn" href="${nav(-1)}" aria-label="Previous period">${icon.left}</a>
+<div class="weeklabel"><h1>${title}</h1><span class="muted small">${s.label}${s.entries.length ? '' : ' · no EODs: a scheduled send would be skipped'}</span></div>
+<a class="iconbtn" href="${nav(1)}" aria-label="Next period">${icon.right}</a></div>
+${isAdmin && smtpOk && sch ? html`<form method="post" action="/settings/n/${sch.id}/send" class="row2 card"><input type="hidden" name="from" value="${s.from}"><input type="hidden" name="to_date" value="${s.to}"><input type="email" name="to" placeholder="Test address (empty = recipients)" aria-label="Send to"><button class="btn primary" type="submit">Send test</button></form>` : ''}
 <div class="emailprev">${raw(emailHtml)}</div>`;
-  return layout(req, { title: 'Weekly email', active: 'settings', body });
+  return layout(req, { title, active: 'settings', body });
 }
 
 function message(req, { title, text, back }) {
   return layout(req, { title, body: html`<div class="card narrow"><h1>${title}</h1><p>${text}</p><a class="btn big" href="${back || '/'}">Back</a></div>` });
 }
 
-module.exports = { layout, login, adminLogin, week, list, detail, form, settings, summaryPage, message, tzShort };
+module.exports = { layout, login, adminLogin, week, list, detail, form, settings, scheduleForm, summaryPage, message, tzShort };

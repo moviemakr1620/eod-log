@@ -44,9 +44,9 @@ const d1 = addDays(lastWeek, 1);
 r = await req('/new', { method: 'POST', body: entryForm({
   fields: { job: 'Acme Spring Promo', date: d1, job_type: 'Film shoot', client: 'Acme Corp', location: 'Conshohocken, PA', tz: 'America/New_York', crew_chief: 'Jason', vehicle: 'Sprinter 2', vehicle_kind: 'company', driver: 'Jason', miles: '42', tolls: '6.50', media_taken: '4 CFexpress', media_used: '3', equip_requested: 'Extra wireless lav', equip_provided: 'Aputure 600d, 2x lav', notes: 'Client happy. Sending selects Friday.', issues: 'Cracked C-stand knuckle' },
   crew: [
-    { name: 'Jason', role: 'DP', leave_shop: '06:00', on_set: '07:15', start: '07:30', meals: [{ start: '12:30', end: '13:00' }], wrap: '18:00', wheels_up: '18:45', return_shop: '20:00', edit_hours: '2' },
-    { name: 'Maria Lopez', role: 'Gaffer', start: '07:30', meals: [{ start: '12:30', end: '13:00' }], wrap: '18:00' },
-    { name: 'Dev Patel', role: 'PA', start: '09:00', meals: [{ start: '13:00', end: '13:30' }], wrap: '15:00' },
+    { name: 'Jason', role: 'DP', leave_shop: '06:00', on_set: '07:15', start: '07:30', meals: [{ start: '12:30', end: '13:00' }], stop: '18:00', wheels_up: '18:45', return_shop: '20:00', edit_hours: '2' },
+    { name: 'Maria Lopez', role: 'Gaffer', start: '07:30', meals: [{ start: '12:30', end: '13:00' }], stop: '18:00' },
+    { name: 'Dev Patel', role: 'PA', start: '09:00', meals: [{ start: '13:00', end: '13:30' }], stop: '15:00' },
   ],
   expenses: [
     { key: '1', description: 'Gas for Sprinter', category: 'Fuel', amount: '63.65', paid_by: 'personal', person: 'Maria Lopez', hasFiles: true },
@@ -61,7 +61,7 @@ const id1 = Number(/\/e\/(\d+)/.exec(r.headers.get('location'))[1]);
 r = await req('/new', { method: 'POST', body: entryForm({
   fields: { job: 'Gala at the Kimmel', date: addDays(lastWeek, 4), job_type: 'Live event', client: 'Philly Arts Fund', location: 'Kimmel Center', tz: 'America/New_York' },
   crew: [
-    { name: 'Jason', role: 'A1', start: '15:00', meals: [{ start: '18:00', end: '18:45' }, { start: '23:30', end: '00:00' }], wrap: '02:00' },
+    { name: 'Jason', role: 'A1', start: '15:00', meals: [{ start: '18:00', end: '18:45' }, { start: '23:30', end: '00:00' }], stop: '02:00' },
     { name: 'Dev Patel', role: 'Stagehand', hours_override: '8' },
   ],
   expenses: [{ key: '1', description: 'Parking garage', category: 'Parking', amount: '30', paid_by: 'personal', person: 'Dev Patel', hasFiles: false }],
@@ -76,10 +76,24 @@ r = await req('/new', { method: 'POST', body: entryForm({ fields: { job: 'x', da
 ok(r.status === 303, 'non-image upload ignored, entry still saved');
 const idJunk = Number(/\/e\/(\d+)/.exec(r.headers.get('location'))[1]);
 
+let h;
+// time formats + old field name + nameless rows
+r = await req('/new', { method: 'POST', body: entryForm({ fields: { job: 'Formats', date: today },
+  crew: [{ name: 'Secs', start: '07:30:00', stop: '18:00:00.000' }, { name: 'AmPm', start: '7:30 AM', stop: '6:00 PM' }, { name: 'OldWrap', start: '9:00', wrap: '17:30' }, { name: 'Night', start: '22:00', stop: '06:00', meals: [{ start: '02:00', end: '02:30' }] }] }) });
+const idFmt = Number(/\/e\/(\d+)/.exec(r.headers.get('location'))[1]);
+h = await text(await req(`/e/${idFmt}`));
+ok((h.match(/>10\.5 h</g) || []).length === 2 && h.includes('>8.5 h<') && h.includes('>7.5 h<') && h.includes('7:30am') && h.includes('6:00pm'), 'times with seconds / AM-PM / old "wrap" / overnight all saved (10.5, 10.5, 8.5, 7.5 h)');
+r = await req('/new', { method: 'POST', body: entryForm({ fields: { job: 'Nameless', date: today }, crew: [{ name: '', start: '08:00', stop: '17:00' }] }) });
+h = await text(r); ok(r.status === 400 && h.includes('has times but no name'), 'crew row with times but no name is refused, not silently dropped');
+r = await req('/new', { method: 'POST', body: entryForm({ fields: { job: 'NoMeal', date: today }, crew: [{ name: 'A', start: '08:00', stop: '16:00', meals: [{ start: '', end: '' }] }] }) });
+const idNoMeal = Number(/\/e\/(\d+)/.exec(r.headers.get('location'))[1]);
+h = await text(await req(`/e/${idNoMeal}`)); ok(h.includes('>8 h<') && !/<dt>Meal/.test(h), 'no meal entered = nothing deducted (8 h)');
+
 // detail
-r = await req(`/e/${id1}`); let h = await text(r);
+r = await req(`/e/${id1}`); h = await text(r);
 ok(h.includes('Acme Spring Promo') && h.includes('Maria Lopez') && h.includes('Dev Patel'), 'detail shows crew');
-ok(h.includes('13.5 h') && h.includes('10 h') && h.includes('5.5 h'), 'detail shows separate hours (13.5 shop-to-shop / 10 / 5.5)');
+ok((h.match(/>10 h</g) || []).length >= 2 && h.includes('5.5 h') && h.includes('25.5 h total'), 'detail: separate hours 10 / 10 / 5.5 (travel times ignored, meals deducted)');
+ok(h.includes('On-site hours') && h.includes('11.5 h'), 'detail: secondary on-site hours (7:15 to 6:45pm = 11.5 h)');
 const rid = Number(/\/r\/(\d+)/.exec(h)[1]);
 ok(/<img src="\/r\/\d+"/.test(h) && />PDF</.test(h), 'detail shows image thumbnail and PDF receipt');
 r = await req(`/r/${rid}`); ok(r.status === 200 && /image\/jpeg/.test(r.headers.get('content-type')), 'receipt image served to signed-in user');
@@ -89,7 +103,7 @@ ok(h.includes('9.75 h') && h.includes('8 h'), 'overnight shift 3pm-2am minus 2 m
 // week view (last week)
 r = await req(`/?week=${lastWeek}`); h = await text(r);
 ok(h.includes('Acme Spring Promo') && h.includes('Gala at the Kimmel'), 'week view lists both entries');
-ok(h.includes('46.75') && h.includes('$93.65'), 'week totals: 46.75 crew hrs, $93.65 to reimburse');
+ok(h.includes('43.25') && h.includes('$93.65'), 'week totals: 43.25 crew hrs, $93.65 to reimburse');
 // list + search + filter
 r = await req('/list?q=kimmel'); h = await text(r); ok(h.includes('Gala at the Kimmel') && !h.includes('Acme Spring Promo'), 'list search filters');
 r = await req('/list?person=Maria%20Lopez'); h = await text(r); ok(h.includes('Acme Spring Promo') && !h.includes('Gala at'), 'list filter by person');
@@ -98,11 +112,11 @@ r = await req('/list?type=Live%20event'); h = await text(r); ok(h.includes('Gala
 r = await req('/new'); h = await text(r); ok(h.includes('<option value="Maria Lopez">') && h.includes('<option value="Acme Spring Promo">'), 'form remembers crew names and projects');
 r = await req(`/new?from=${id1}`); h = await text(r); ok(h.includes('Acme Spring Promo') && h.includes('Maria Lopez'), 'duplicate prefills job and crew');
 
-// edit: change Dev's wrap, add a receipt to the existing expense, delete the PDF
+// edit: change Dev's stop, add a receipt to the existing expense, delete the PDF
 r = await req(`/e/${id1}/edit`); h = await text(r);
 const init = JSON.parse(/<script type="application\/json" id="init">([\s\S]*?)<\/script>/.exec(h)[1]);
 const pdf = init.expenses[1].receipts[0].id;
-const crew = init.crew.map((c) => (c.name === 'Dev Patel' ? { ...c, wrap: '17:00' } : c));
+const crew = init.crew.map((c) => (c.name === 'Dev Patel' ? { ...c, stop: '17:00' } : c));
 const fd = entryForm({ fields: { job: 'Acme Spring Promo', date: d1, job_type: 'Film shoot', client: 'Acme Corp', location: 'Conshohocken, PA', tz: 'America/New_York', crew_chief: 'Jason' },
   crew, expenses: init.expenses.map((x, i) => ({ ...x, key: String(i + 1) })), files: [['file_x1', 'test/fixtures/receipt.jpg', 'image/jpeg']] });
 fd.append('delete_receipts_json', JSON.stringify([pdf]));
@@ -117,11 +131,16 @@ r = await req('/admin-login', { method: 'POST', body: new URLSearchParams({ pass
 ok(r.status === 303 && r.headers.get('location') === '/settings', 'admin elevation works');
 r = await req(`/e/${idJunk}/delete`, { method: 'POST' }); ok(r.status === 303, 'admin can delete');
 r = await req(`/e/${idJunk}`); ok(r.status === 404, 'deleted entry gone');
-r = await req('/settings', { method: 'POST', body: new URLSearchParams({ manager_emails: 'boss@kpi.example, ops@kpi.example, not-an-email', summary_enabled: '1', summary_day: '1', summary_time: '08:00', summary_tz: 'America/New_York' }) });
-h = await text(r); ok(h.includes('2 manager addresses'), 'settings save (invalid address dropped)');
+for (const x of [idFmt, idNoMeal]) await req(`/e/${x}/delete`, { method: 'POST' });
+h = await text(await req('/settings'));
+ok(h.includes('Weekly summary') && h.includes('Mondays at 08:00'), 'old weekly summary settings migrated into a first notification');
+r = await req('/settings/n/new', { method: 'POST', body: new URLSearchParams({ name: 'Ops weekly', recipients: 'boss@kpi.example, ops@kpi.example, not-an-email', frequency: 'weekly', weekday: '1', send_time: '23:59', tz: 'America/New_York', enabled: '1' }) });
+ok(r.status === 303, 'add a notification');
+h = await text(await req('/settings')); ok(h.includes('Ops weekly') && h.includes('To: boss@kpi.example, ops@kpi.example') && !h.includes('not-an-email'), 'notification saved (invalid address dropped)');
+const opsId = Number([...h.matchAll(/href="\/settings\/n\/(\d+)"/g)].pop()[1]);
 
 // summary preview
-r = await req(`/summary?week=${lastWeek}`); h = await text(r);
+r = await req(`/summary?n=${opsId}`); h = await text(r);
 ok(h.includes('Hours by person') && h.includes('Maria Lopez') && h.includes('$63.65') && h.includes(`/e/${id1}`), 'summary preview has people, reimbursements, links');
 
 // CSV
@@ -132,22 +151,22 @@ r = await req('/export/expenses.csv'); h = await text(r); ok(h.includes('persona
 // email
 if (MAILPIT) {
   await fetch(MAILPIT + '/api/v1/messages', { method: 'DELETE' });
-  r = await req('/summary/send', { method: 'POST', body: new URLSearchParams({ week: lastWeek }) }); h = await text(r);
-  ok(r.status === 200 && h.includes('boss@kpi.example'), 'send summary to managers');
+  r = await req(`/settings/n/${opsId}/send`, { method: 'POST', body: new URLSearchParams({}) }); h = await text(r);
+  ok(r.status === 200 && h.includes('boss@kpi.example'), 'send test of a notification to its recipients');
   await new Promise((res) => setTimeout(res, 800));
   const list = await (await fetch(MAILPIT + '/api/v1/messages')).json();
   ok(list.messages && list.messages.length === 1, 'SMTP catcher received 1 message');
   const m = list.messages[0];
-  ok(m && m.To.length === 2 && /weekly summary/.test(m.Subject), `subject: ${m && m.Subject}`);
+  ok(m && m.To.length === 2 && /Ops weekly/.test(m.Subject), `subject: ${m && m.Subject}`);
   const full = await (await fetch(MAILPIT + '/api/v1/message/' + m.ID)).json();
   ok(full.HTML.includes('Maria Lopez') && full.HTML.includes('$93.65') && full.Text.includes('Acme Spring Promo'), 'email body has hours + reimbursements (HTML and text)');
-  // with receipts attached, to a single test address
-  r = await req('/settings', { method: 'POST', body: new URLSearchParams({ manager_emails: 'boss@kpi.example, ops@kpi.example', summary_enabled: '1', summary_day: '1', summary_time: '08:00', summary_tz: 'America/New_York', summary_attach: '1' }) });
-  r = await req('/summary/send', { method: 'POST', body: new URLSearchParams({ week: lastWeek, to: 'jason@kpi.example' }) });
+  r = await req(`/settings/n/${opsId}`, { method: 'POST', body: new URLSearchParams({ name: 'Ops weekly', recipients: 'boss@kpi.example, ops@kpi.example', frequency: 'weekly', weekday: '1', send_time: '23:59', tz: 'America/New_York', enabled: '1', attach: '1' }) });
+  r = await req(`/settings/n/${opsId}/send`, { method: 'POST', body: new URLSearchParams({ to: 'jason@kpi.example' }) });
   await new Promise((res) => setTimeout(res, 800));
   const list2 = await (await fetch(MAILPIT + '/api/v1/messages')).json();
-  const t = list2.messages.find((x) => /\[TEST\]/.test(x.Subject));
-  ok(t && t.To.length === 1 && t.Attachments >= 2, `test email to one address with ${t && t.Attachments} receipt attachment(s)`);
+  const t = list2.messages.find((x) => x.To.length === 1);
+  ok(t && t.Attachments >= 2, `test email to one address with ${t && t.Attachments} receipt attachment(s)`);
+  await req(`/settings/n/${opsId}/delete`, { method: 'POST' });
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');

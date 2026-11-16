@@ -4,13 +4,14 @@ const crypto = require('crypto');
 const express = require('express');
 const multer = require('multer');
 const cfg = require('./config');
-const { getSetting, setSetting, db } = require('./db');
+const { db } = require('./db');
 const store = require('./store');
 const auth = require('./auth');
 const views = require('./views');
 const summary = require('./summary');
 const mailer = require('./mailer');
-const { isDate, weekStart, todayIn, addDays, str, timeStr, TIMEZONES } = require('./util');
+const { isDate, weekStart, todayIn, addDays, str, nowParts, TIMEZONES } = require('./util');
+const H = require('../public/hours.js');
 
 const app = express();
 app.disable('x-powered-by');
@@ -105,14 +106,14 @@ app.get('/list', (req, res) => {
 
 function blankEntry(req) {
   const me = (req.session && req.session.n) || '';
-  return { date: appToday(), tz: cfg.TZ, crew_chief: me, crew: [{ name: me, meals: [{}] }], expenses: [], receipts: [] };
+  return { date: appToday(), tz: cfg.TZ, crew_chief: me, crew: [{ name: me, meals: [] }], expenses: [], receipts: [] };
 }
 app.get('/new', (req, res) => {
   let e = blankEntry(req);
   const src = req.query.from && store.get(Number(req.query.from));
   if (src) {
     e = { ...src, id: undefined, date: appToday(), expenses: [], receipts: [], notes: null, issues: null, media_taken: null, media_used: null, miles: null, tolls: null,
-      crew: src.crew.map((c) => ({ name: c.name, role: c.role, leave_shop: c.leave_shop, on_set: c.on_set, start: c.start, wrap: c.wrap, wheels_up: c.wheels_up, return_shop: c.return_shop, meals: c.meals })) };
+      crew: src.crew.map((c) => ({ name: c.name, role: c.role, leave_shop: c.leave_shop, on_set: c.on_set, start: c.start, stop: c.stop, wheels_up: c.wheels_up, return_shop: c.return_shop, meals: c.meals })) };
   }
   send(res, views.form(req, { e, sugg: store.suggestions(), isNew: true }));
 });
@@ -150,42 +151,81 @@ app.get('/r/:id', (req, res) => {
   res.sendFile(file, (err) => { if (err && !res.headersSent) res.status(404).send('File missing'); });
 });
 
-// ---- summary
+// ---- summary preview + notifications
+function summaryContext(req) {
+  const sch = req.query.n ? mailer.getSchedule(Number(req.query.n)) : null;
+  let from, to;
+  if (isDate(req.query.from) && isDate(req.query.to) && req.query.from <= req.query.to) { from = req.query.from; to = req.query.to; }
+  else if (sch && !req.query.week) ({ from, to } = mailer.previewPeriod(sch));
+  else { from = weekStart(isDate(req.query.week) ? req.query.week : addDays(appToday(), -7)); to = addDays(from, 6); }
+  return { sch, s: summary.build(from, to), title: sch ? sch.name : 'Weekly summary' };
+}
 app.get('/summary', (req, res) => {
-  const start = weekStart(isDate(req.query.week) ? req.query.week : addDays(appToday(), -7));
-  const s = summary.build(start);
-  if (req.query.raw === '1') return res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="margin:12px">${summary.emailHtml(s)}</body>`);
-  send(res, views.summaryPage(req, { s, emailHtml: summary.emailHtml(s), isAdmin: auth.isAdmin(req), smtpOk: mailer.smtpConfigured() }));
+  const { sch, s, title } = summaryContext(req);
+  if (req.query.raw === '1') return res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="margin:12px">${summary.emailHtml(s, title)}</body>`);
+  send(res, views.summaryPage(req, { s, sch, title, emailHtml: summary.emailHtml(s, title), isAdmin: auth.isAdmin(req), smtpOk: mailer.smtpConfigured() }));
 });
-app.post('/summary/send', requireAdmin, async (req, res) => {
-  const week = weekStart(isDate(req.body.week) ? req.body.week : addDays(appToday(), -7));
+
+const FREQ_KEYS = Object.keys(mailer.FREQS);
+function readSchedule(body) {
+  return {
+    name: str(body.name, 80) || 'Summary',
+    recipients: mailer.parseList(body.recipients).join(', '),
+    frequency: FREQ_KEYS.includes(body.frequency) ? body.frequency : 'weekly',
+    weekday: /^[0-6]$/.test(body.weekday) ? Number(body.weekday) : 1,
+    send_time: H.norm(body.send_time) || '08:00',
+    tz: TIMEZONES.some(([v]) => v === body.tz) ? body.tz : cfg.TZ,
+    covers: body.covers === 'today' ? 'today' : 'yesterday',
+    attach: body.attach === '1' ? 1 : 0,
+    enabled: body.enabled === '1' ? 1 : 0,
+  };
+}
+// Saving a schedule after today's send time must not fire an instant surprise email for today's period.
+function preclaimToday(id) {
+  const sch = mailer.getSchedule(id);
+  const n = nowParts(sch.tz);
+  if (!mailer.isSendDay(sch, n.date) || n.hhmm < sch.send_time) return;
+  const p = mailer.periodFor(sch, n.date);
+  db.prepare(`INSERT OR IGNORE INTO sends (schedule_id,period_from,period_to,status,detail,at) VALUES (?,?,?,'skipped','Saved after today''s send time; starts next time',?)`).run(id, p.from, p.to, new Date().toISOString());
+}
+function settingsPage(req, res, extra = {}, status = 200) {
+  const smtp = { ok: mailer.smtpConfigured(), host: cfg.SMTP.host, port: cfg.SMTP.port, secure: cfg.SMTP.secure, from: cfg.SMTP.from, user: Boolean(cfg.SMTP.user) };
+  const lastBy = {};
+  mailer.recentSends(500).forEach((r) => { if (!lastBy[r.schedule_id]) lastBy[r.schedule_id] = r; });
+  const schedules = mailer.listSchedules().map((x) => ({ ...x, desc: mailer.describe(x), last: lastBy[x.id], preview: mailer.previewPeriod(x) }));
+  send(res, views.settings(req, { smtp, schedules, log: mailer.recentSends(15), ...extra }), status);
+}
+app.get('/settings', requireAdmin, (req, res) => settingsPage(req, res, { msg: req.query.msg ? String(req.query.msg).slice(0, 200) : '' }));
+app.get('/settings/n/new', requireAdmin, (req, res) => send(res, views.scheduleForm(req, { sch: { name: '', recipients: '', frequency: 'daily', weekday: 1, send_time: '18:00', tz: cfg.TZ, covers: 'today', attach: 0, enabled: 1 }, isNew: true })));
+app.post('/settings/n/new', requireAdmin, (req, res) => {
+  const x = readSchedule(req.body);
+  const id = db.prepare('INSERT INTO schedules (name,recipients,frequency,weekday,send_time,tz,covers,attach,enabled,created_at) VALUES (@name,@recipients,@frequency,@weekday,@send_time,@tz,@covers,@attach,@enabled,@created_at)')
+    .run({ ...x, created_at: new Date().toISOString() }).lastInsertRowid;
+  preclaimToday(Number(id));
+  res.redirect(303, '/settings?msg=' + encodeURIComponent(`Added "${x.name}".`));
+});
+const loadSch = (req, res, next) => { const x = mailer.getSchedule(Number(req.params.id)); if (!x) return send(res, views.message(req, { title: 'Not found', text: 'That notification does not exist.', back: '/settings' }), 404); req.sch = x; next(); };
+app.get('/settings/n/:id', requireAdmin, loadSch, (req, res) => send(res, views.scheduleForm(req, { sch: req.sch, isNew: false })));
+app.post('/settings/n/:id', requireAdmin, loadSch, (req, res) => {
+  const x = readSchedule(req.body);
+  db.prepare('UPDATE schedules SET name=@name,recipients=@recipients,frequency=@frequency,weekday=@weekday,send_time=@send_time,tz=@tz,covers=@covers,attach=@attach,enabled=@enabled WHERE id=@id').run({ ...x, id: req.sch.id });
+  preclaimToday(req.sch.id);
+  res.redirect(303, '/settings?msg=' + encodeURIComponent(`Saved "${x.name}".`));
+});
+app.post('/settings/n/:id/delete', requireAdmin, loadSch, (req, res) => {
+  db.prepare('DELETE FROM schedules WHERE id=?').run(req.sch.id);
+  res.redirect(303, '/settings?msg=' + encodeURIComponent(`Deleted "${req.sch.name}".`));
+});
+app.post('/settings/n/:id/send', requireAdmin, loadSch, async (req, res) => {
   const to = mailer.parseList(req.body.to);
+  const period = isDate(req.body.from) && isDate(req.body.to_date) ? { from: req.body.from, to: req.body.to_date } : mailer.previewPeriod(req.sch);
   try {
-    const r = await mailer.sendSummary(week, to, { test: to.length > 0 });
-    setSetting('summary_last_result', `${to.length ? 'Test' : 'Manual'} send ${new Date().toLocaleString('en-US', { timeZone: getSetting('summary_tz') || cfg.TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })} to ${r.recipients.join(', ')} (week of ${week})`);
-    send(res, views.message(req, { title: 'Sent', text: `Summary for ${r.summary.label} sent to ${r.recipients.join(', ')}.`, back: '/settings' }));
+    const r = await mailer.sendFor(req.sch, period, to, { test: true });
+    mailer.log(req.sch.id, { from: 'test:' + new Date().toISOString(), to: period.to }, 'test', `Test (${period.from}${period.to !== period.from ? ' to ' + period.to : ''}) sent to ${r.recipients.join(', ')}`, r.summary.entries.length);
+    send(res, views.message(req, { title: 'Test sent', text: `"${req.sch.name}" for ${r.summary.label} (${r.summary.entries.length} EOD${r.summary.entries.length === 1 ? '' : 's'}) sent to ${r.recipients.join(', ')}.${r.summary.entries.length ? '' : ' There were no EODs, so a scheduled send for this period would have been skipped.'}`, back: '/settings' }));
   } catch (err) {
     send(res, views.message(req, { title: 'Could not send', text: err.message, back: '/settings' }), 500);
   }
-});
-
-// ---- settings
-const SETTING_KEYS = ['manager_emails', 'summary_enabled', 'summary_day', 'summary_time', 'summary_tz', 'summary_attach', 'summary_last_result'];
-function settingsPage(req, res, extra = {}) {
-  const st = Object.fromEntries(SETTING_KEYS.map((k) => [k, getSetting(k)]));
-  const smtp = { ok: mailer.smtpConfigured(), host: cfg.SMTP.host, port: cfg.SMTP.port, secure: cfg.SMTP.secure, from: cfg.SMTP.from, user: Boolean(cfg.SMTP.user) };
-  send(res, views.settings(req, { st, smtp, lastWeek: addDays(weekStart(appToday()), -7), ...extra }));
-}
-app.get('/settings', requireAdmin, (req, res) => settingsPage(req, res));
-app.post('/settings', requireAdmin, (req, res) => {
-  const emails = mailer.parseList(req.body.manager_emails);
-  setSetting('manager_emails', emails.join(', '));
-  setSetting('summary_enabled', req.body.summary_enabled === '1' ? '1' : '0');
-  setSetting('summary_day', /^[0-6]$/.test(req.body.summary_day) ? req.body.summary_day : '1');
-  setSetting('summary_time', timeStr(req.body.summary_time) || '08:00');
-  setSetting('summary_tz', TIMEZONES.some(([v]) => v === req.body.summary_tz) ? req.body.summary_tz : cfg.TZ);
-  setSetting('summary_attach', req.body.summary_attach === '1' ? '1' : '0');
-  settingsPage(req, res, { msg: `Saved. ${emails.length} manager address${emails.length === 1 ? '' : 'es'}.` });
 });
 
 // ---- CSV export
@@ -197,11 +237,10 @@ function exportEntries(req) {
   const f = { q: str(req.query.q, 100), type: str(req.query.type, 40), person: str(req.query.person, 120), from, to };
   return store.search({ ...f, limit: 100000, offset: 0 }).entries.reverse();
 }
-const H = require('../public/hours.js');
 app.get('/export/hours.csv', (req, res) => {
-  const rows = [['date', 'job', 'job_type', 'client', 'location', 'time_zone', 'crew_chief', 'name', 'role', 'leave_shop', 'on_set', 'start', 'meals', 'wrap', 'wheels_up', 'return_shop', 'hours', 'work_hours_start_to_wrap', 'meal_hours', 'hours_typed_in', 'edit_dit_hours', 'entry_url']];
-  exportEntries(req).forEach((e) => e.crew.forEach((c) => rows.push([e.date, e.job, e.job_type, e.client, e.location, e.tz, e.crew_chief, c.name, c.role, c.leave_shop, c.on_set, c.start,
-    (c.meals || []).map((m) => `${m.start || '?'}-${m.end || '?'}`).join(' '), c.wrap, c.wheels_up, c.return_shop, H.dec(c.paid_min), H.dec(c.work_min), H.dec(c.meal_min), c.hours_override, c.edit_hours, `${cfg.PUBLIC_URL}/e/${e.id}`])));
+  const rows = [['date', 'job', 'job_type', 'client', 'location', 'time_zone', 'crew_chief', 'name', 'role', 'start', 'stop', 'meals', 'on_site', 'off_site', 'leave_shop', 'return_shop', 'hours', 'on_site_hours', 'meal_hours', 'hours_typed_in', 'edit_dit_hours', 'entry_url']];
+  exportEntries(req).forEach((e) => e.crew.forEach((c) => rows.push([e.date, e.job, e.job_type, e.client, e.location, e.tz, e.crew_chief, c.name, c.role, c.start, c.stop,
+    (c.meals || []).map((m) => `${m.start || '?'}-${m.end || '?'}`).join(' '), c.on_set, c.wheels_up, c.leave_shop, c.return_shop, H.dec(c.paid_min), H.dec(c.onsite_min), H.dec(c.meal_min), c.hours_override, c.edit_hours, `${cfg.PUBLIC_URL}/e/${e.id}`])));
   res.type('text/csv').attachment('eod-hours.csv').send(csv(rows));
 });
 app.get('/export/expenses.csv', (req, res) => {
