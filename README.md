@@ -28,6 +28,7 @@ Built for film shoots, AV installs and live events. Mobile first: big tap target
 - **Email notifications** (Settings, admin): add as many as you want. Each has a name, its own recipients, **how often** (every day, weekdays, or weekly on a chosen day), the send time and time zone, an on/off switch, and an option to attach receipts.
   Each email has totals, hours by person (with Edit/DIT and the amount to reimburse), jobs, every EOD with a link, and an expense list that flags missing receipts.
   **If there are no EODs in the period, nothing is sent**; it's logged as *skipped*. Each notification has **Preview** and **Send test**, and Settings shows a notification log. The preview has a **Back** button pinned to the top (it returns to Settings or the notification you came from); it is never part of the email itself.
+- **Google Drive copy** (Settings → Google Drive, admin): every EOD is uploaded to an organized, shareable Drive folder: a PDF of the day plus each receipt, named by date, job, expense and amount. Runs in the background with retries; saving an EOD never waits for Drive. See [Google Drive setup](#google-drive-setup).
 - **CSV export** of hours (one row per person per day) and expenses, for payroll or spreadsheets.
 - **Clear all data (admin only).** Settings → *Danger zone* → **Clear all data…** shows how many EODs, receipts and MB will go, links the CSV exports, and needs you to type `DELETE` plus the admin password. By default it deletes all EODs, expenses, receipts and uploaded files and keeps notifications; you can also choose to reset notifications, settings and the log. Before clearing it saves a database copy to `/data/backups/` (last 3 kept; receipt files are not included), then compacts the database.
 
@@ -167,6 +168,59 @@ Because the repo is private, pick one:
 
 **Upgrading from the first version:** the old single weekly summary (its manager emails, day, time and receipts setting) becomes the first notification, "Weekly summary". If it already went out this week, it isn't sent again. The `MANAGER_EMAILS` and `SUMMARY_*` variables are now only used once, to create that first notification on a brand-new install.
 
+## Google Drive setup
+
+| ![drive setup](preview/11-drive-setup.png) | ![drive code](preview/12-drive-code.png) | ![drive connected](preview/13-drive-connected.png) | ![EOD PDF](preview/14-drive-eod-pdf.png) |
+|---|---|---|---|
+
+EOD Log can copy every EOD into Google Drive. Layout:
+
+```
+EOD Log/                                   <- the app creates this; share it from Drive or from the app
+  2026/
+    2026-11 November/
+      2026-11-13 Villanova promo (Film shoot)/
+        EOD 2026-11-13 Villanova promo.pdf                          <- every field, hours per person, expenses
+        2026-11-13 Villanova promo - Lunch for crew - $86.40 (Personal).jpg
+        2026-11-13 Villanova promo - Gas - $63.65 (Card) 1.jpg
+        2026-11-13 Villanova promo - Gas - $63.65 (Card) 2.pdf
+```
+
+- New EODs upload automatically. Editing one replaces the PDF in place (Drive keeps the old versions), renames or moves the folder if the job or date changed, uploads new receipts and trashes removed ones.
+- Deleting an EOD in the app renames its Drive folder to `(deleted) …` (or moves it to the trash, if you pick that).
+- **Clear all data never deletes anything in Drive.**
+- Uploads happen in the background. A failed upload is retried with backoff (30 s, 1 min, 2 min … up to 6 h), and Settings → Google Drive shows what's waiting or failing. **Sync all EODs** uploads everything already in the app. **Test** checks the folder.
+- “Share the folder with” adds those people to the folder (view or edit) and Google emails them a link. You can also share it from Drive like any folder.
+
+### Option A: a Google account (recommended, works with any Google or Workspace account)
+
+The app signs in as one Google account and creates the folder in that account's My Drive, using that account's storage. It uses Google's sign-in for TVs and other devices: the app shows a code and you approve it on your phone. That means it works on a NAS reached over plain `http://` on the LAN, with no redirect URL or domain needed. It only asks for **`drive.file`** access: it can see and change only the files it created, nothing else in the Drive.
+
+One-time setup in Google Cloud (about 5 minutes, free):
+
+1. Go to <https://console.cloud.google.com/> signed in with the company Google account. Use the project picker at the top: **New project**, name it `EOD Log`, then **Create** and select it.
+2. **APIs & Services → Library**: search for **Google Drive API**, open it, click **Enable**.
+3. **APIs & Services → OAuth consent screen** (opens **Google Auth Platform**). Click **Get started**:
+   - App name `EOD Log`, support email: yours.
+   - **Audience: Internal** if this is a Google Workspace account (only your company can use it, no review needed, sign-in never expires).
+   - For a personal @gmail.com account pick **External**. Then under **Audience** click **Publish app** (to "In production"), or the sign-in expires after 7 days. `drive.file` needs no Google review.
+   - Contact email: yours. Agree and **Create**.
+4. **Clients** (or **APIs & Services → Credentials → Create credentials → OAuth client ID**): Application type **TVs and Limited Input devices**, name `EOD Log NAS`, **Create**. Copy the **Client ID** and **Client secret**.
+5. In EOD Log: **Settings → Google Drive**. Paste the Client ID and secret, set the folder name if you like, then **Save**. (Or set `GDRIVE_CLIENT_ID` / `GDRIVE_CLIENT_SECRET` in the container environment.)
+6. Click **Connect Google Drive**. Open **google.com/device** on your phone, enter the code shown, pick the company account and **Allow**. The page switches to *Connected* by itself.
+7. Click **Sync all EODs** to upload the existing ones, then **Open "EOD Log" in Google Drive**. Share it with the team there, or list emails under "Share the folder with".
+
+The sign-in (a refresh token) is stored in the app's database on the `/data` volume. It is never shown or logged. **Disconnect** revokes it. Note that the database backups made by "Clear all data" contain it too, and are readable only by the container user.
+
+### Option B: a Shared Drive with a service account (Google Workspace)
+
+Use this if you'd rather the files belong to a Shared Drive than to one person. A service account has **no storage of its own**, so it can't upload into anyone's My Drive, even a folder shared with it (Google answers `storageQuotaExceeded`). It works only inside a **Shared Drive**.
+
+1. In the same Google Cloud project, with the Drive API enabled: **IAM & Admin → Service accounts → Create service account** (name `eod-log`), **Done**.
+2. Open it → **Keys → Add key → Create new key → JSON**. A `.json` file downloads; keep it private.
+3. In Google Drive, open (or create) a **Shared Drive**, then **Manage members**. Add the service account's email (`eod-log@<project>.iam.gserviceaccount.com`) as **Content manager**. Make a folder in it for EODs and copy its link.
+4. In EOD Log, **Settings → Google Drive**: choose **A service account + a Shared Drive**, paste the whole JSON key and the folder link, then **Save** and **Test**. (Or put the key file in `/data` and set `GDRIVE_SA_FILE=/data/sa.json`.) Some organizations block service-account keys by policy (`iam.disableServiceAccountKeyCreation`); then use Option A.
+
 ## Environment variables (every one)
 
 | Variable | Default | What it does |
@@ -195,6 +249,8 @@ Because the repo is private, pick one:
 | `COOKIE_SECURE` | `auto` | `auto` = Secure cookie when reached over https. |
 | `TRUST_PROXY` | `loopback, linklocal, uniquelocal` | Which proxies' `X-Forwarded-*` headers to trust (NPM on the LAN is covered). |
 | `ALLOW_NO_PASSWORD` | `false` | `true` turns off sign-in entirely. Not recommended. |
+| `GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET` | empty | Google OAuth client (type TVs and Limited Input devices) for the Drive copy. Can be pasted in Settings instead. |
+| `GDRIVE_SA_FILE` | empty | Path inside the container to a service account `.json` (Shared Drive mode). Can be pasted in Settings instead. |
 | `PORT`, `DATA_DIR` | `8080`, `/data` | Inside the container; normally leave alone. |
 
 ## Develop without Docker
@@ -203,13 +259,13 @@ Node 22 or newer:
 ```bash
 npm ci
 npm run dev          # http://localhost:8080 with APP_PASSWORD=dev, data in ./data
-npm test             # unit tests for the hours maths
+npm test             # unit tests (hours maths, Google Drive sync against a local fake)
 ```
 
 ## Testing
 
-- `npm test`: unit tests for `public/hours.js` (start/stop, optional meals, overnight, travel times ignored, typed-in hours, time formats such as `07:30:00`, `7:30 PM`).
-- `scripts/e2e.mjs`: about 70 end-to-end checks against a running server. It signs in, creates entries with several crew on separate hours and with receipts, then checks the week and list views, search and filters, editing, deleting receipts, admin-only actions, settings, CSV, the preview Back button and Clear all data (wrong confirmation, non-admin and cross-site attempts blocked). Set `DOCKER_EXEC='docker exec eod-log'` to also check that upload files are deleted and backups are written.
+- `npm test`: unit tests for `public/hours.js` and the Google Drive sync (`test/drive.test.js`, run against `scripts/mock-google.mjs`, a small fake of the Google sign-in and Drive endpoints: names, device sign-in, uploads including big resumable ones, edits, moves, retries, deletes, sharing, service-account mode). Hours tests cover start/stop, optional meals, overnight, travel times ignored, typed-in hours, and time formats such as `07:30:00` and `7:30 PM`.
+- `scripts/e2e.mjs`: about 70 end-to-end checks against a running server. It signs in, creates entries with several crew on separate hours and with receipts, then checks the week and list views, search and filters, editing, deleting receipts, admin-only actions, settings, CSV, the preview Back button and Clear all data (wrong confirmation, non-admin and cross-site attempts blocked). Set `DOCKER_EXEC='docker exec eod-log'` to also check that upload files are deleted and backups are written. With `GMOCK=` pointing at `scripts/mock-google.mjs` (and the server started with the test-only `GDRIVE_API_BASE` / `GDRIVE_OAUTH_BASE` pointing at it), it also runs the Google Drive flow: connect, share, sync, retry, delete.
   With `MAILPIT=` set, it also sends the summary to a [Mailpit](https://github.com/axllent/mailpit) catcher and checks the email, including attached receipts.
   `BASE=http://127.0.0.1:7240 APP_PASSWORD=... ADMIN_PASSWORD=... MAILPIT=http://127.0.0.1:8025 node scripts/e2e.mjs`
 - `scripts/screenshots.mjs`: phone-size (390×844) screenshots into `preview/`. It needs `puppeteer-core` installed outside the project and Chrome.
@@ -225,6 +281,7 @@ npm test             # unit tests for the hours maths
 | `src/store.js`, `src/db.js` | SQLite schema and queries (better-sqlite3). |
 | `src/views.js` | Server-rendered HTML (escaped by default). |
 | `src/summary.js`, `src/mailer.js` | Summary data, email HTML/text, SMTP, notification schedules and the scheduler. |
+| `src/drive.js`, `src/drivepdf.js` | Google Drive sync (sign-in, upload queue, folder layout) and the per-EOD PDF. |
 | `src/auth.js` | Shared-password sign-in, signed cookies, admin elevation. |
 | `public/` | `app.css`, `form.js` (EOD form), `hours.js` (shared hours maths), icons and manifest. |
 | `test/`, `scripts/` | Unit test, fixtures, end-to-end and screenshot scripts. |

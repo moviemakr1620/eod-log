@@ -99,6 +99,26 @@ CREATE TABLE IF NOT EXISTS sends (
 );
 `);
 
+// Google Drive sync bookkeeping (Drive file IDs per entry / receipt, and the retry queue)
+db.exec(`
+CREATE TABLE IF NOT EXISTS drive_entries (
+  id INTEGER PRIMARY KEY,
+  entry_id INTEGER UNIQUE,               -- NULL once the EOD was deleted (row then waits for its Drive folder to be marked/trashed)
+  folder_id TEXT, folder_name TEXT, parent_id TEXT, pdf_id TEXT,
+  synced_at TEXT, pending_delete INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0, last_error TEXT
+);
+CREATE TABLE IF NOT EXISTS drive_files (
+  stored TEXT PRIMARY KEY,               -- receipts.stored (random, never reused)
+  entry_id INTEGER NOT NULL, file_id TEXT NOT NULL, name TEXT
+);
+CREATE TABLE IF NOT EXISTS drive_queue (
+  entry_id INTEGER PRIMARY KEY,
+  attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0, last_error TEXT, queued_at TEXT
+);
+CREATE TABLE IF NOT EXISTS drive_folders (key TEXT PRIMARY KEY, file_id TEXT NOT NULL);
+`);
+
 // ---- migrations (PRAGMA user_version)
 const cols = (t) => db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
 let ver = db.pragma('user_version', { simple: true });

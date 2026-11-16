@@ -2,7 +2,7 @@ const cfg = require('./config');
 const H = require('../public/hours.js');
 const { html, raw, prettyDate, rangeLabel, money, addDays, TIMEZONES, tzShort, tzLabel, JOB_TYPES, EXPENSE_CATS, WDL } = require('./util');
 
-const V = '16'; // static asset cache-buster
+const V = '18'; // static asset cache-buster
 const icon = {
   plus: raw('<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" fill="none"/></svg>'),
   left: raw('<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'),
@@ -208,7 +208,7 @@ ${dl('dl-jobs', sugg.jobs)}${dl('dl-people', sugg.people)}${dl('dl-clients', sug
   return layout(req, { title: isNew ? 'New EOD' : 'Edit EOD', body, fab: false, scripts: ['/hours.js', '/form.js'] });
 }
 
-function settings(req, { smtp, schedules, log, msg, err, stats }) {
+function settings(req, { smtp, schedules, log, msg, err, stats, drive }) {
   const statusTag = (st) => html`<span class="tag tag-${st}">${st}</span>`;
   const period = (r) => (String(r.period_from).startsWith('test:') ? 'test' : r.period_from === r.period_to ? prettyDate(r.period_from) : `${prettyDate(r.period_from)} – ${prettyDate(r.period_to)}`);
   const body = html`<h1>Settings</h1>
@@ -234,6 +234,8 @@ ${log.length ? html`<details class="card"><summary>Notification log <span class=
 ${log.map((r) => html`<tr><td class="small">${new Date(r.at).toLocaleString('en-US', { timeZone: cfg.TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</td><td class="small">${r.name}<div class="muted">${period(r)}</div></td><td class="small">${statusTag(r.status)} ${r.detail || ''}</td></tr>`)}
 </tbody></table></details>` : ''}
 
+<div class="card stack"><div class="sec-head"><h2>Google Drive</h2><a class="btn" href="/settings/drive">${drive && drive.connected ? 'Manage' : 'Set up'}</a></div>
+<p class="small">${drive && drive.connected ? html`Uploading EODs and receipts to Google Drive${drive.account ? html` as <b>${drive.account}</b>` : ''}. ${drive.pending ? `${drive.pending} waiting.` : 'All caught up.'}` : 'Copy every EOD (PDF) and its receipts into an organized, shareable Google Drive folder.'}</p></div>
 <div class="card stack"><h2>Export</h2><p class="small"><a href="/export/hours.csv">All hours (CSV)</a> · <a href="/export/expenses.csv">All expenses (CSV)</a></p></div>
 <div class="card stack danger-zone"><h2>Danger zone</h2><p class="small">${stats.entries} EOD${stats.entries === 1 ? '' : 's'}, ${stats.receipts} receipt${stats.receipts === 1 ? '' : 's'} (${fmtMB(stats.uploadBytes)}). Clearing deletes them for good; you'll get a warning and a chance to download a CSV first.</p>
 <a class="btn danger big" href="/settings/clear">Clear all data…</a></div>
@@ -283,6 +285,71 @@ ${isAdmin && smtpOk && sch ? html`<form method="post" action="/settings/n/${sch.
   return layout(req, { title, active: 'settings', body, bare: true, fab: false });
 }
 
+function drivePage(req, { st, dev, msg, err }) {
+  const when = (iso) => (iso ? new Date(iso).toLocaleString('en-US', { timeZone: cfg.TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' ' + tzShort(cfg.TZ) : 'never');
+  const chk = (c) => (c ? raw(' checked') : '');
+  const waiting = dev.state === 'waiting';
+  const shareList = Object.keys(st.share).join(', ') || st.sharePending;
+  const body = html`<div class="detail-head"><a class="back" href="/settings">${icon.left} Settings</a></div>
+<h1>Google Drive</h1>
+${msg ? html`<p class="alert info" role="status">${msg}</p>` : ''}${err ? html`<p class="alert" role="alert">${err}</p>` : ''}
+${st.authError ? html`<p class="alert" role="alert">${st.authError}</p>` : ''}
+${waiting ? html`<div class="card stack drive-connect" id="connect" data-device-wait>
+<h2>Approve on Google</h2>
+<p>1. On any phone or computer open <a href="${dev.verification_url}" target="_blank" rel="noopener"><b>${dev.verification_url.replace(/^https?:\/\//, '')}</b></a></p>
+<p>2. Sign in with the Google account that should own the files, and enter this code:</p>
+<p class="devcode" aria-label="Code">${dev.user_code}</p>
+<p class="small muted">3. Allow access. This page updates by itself when you're done. <span data-dev-state>Waiting…</span></p>
+<form method="post" action="/settings/drive/cancel"><button class="btn" type="submit">Cancel</button></form></div>` : ''}
+${['denied', 'expired', 'error'].includes(dev.state) ? html`<p class="alert" role="alert">${dev.state === 'denied' ? 'Access was denied on the Google page.' : dev.state === 'expired' ? 'The code expired before it was approved. Click Connect again.' : 'Connecting failed: ' + dev.error}</p>` : ''}
+
+${waiting && !st.connected ? '' : html`<div class="card stack drive-status">
+${st.connected ? html`<div class="crew-top"><div><h2>Connected</h2><div class="small">${st.mode === 'sa' ? html`Service account <b>${st.account}</b> in a Shared Drive` : html`Google account <b>${st.account || '(unknown email)'}</b>`}</div></div><span class="tag tag-sent">${st.auto ? 'auto upload on' : 'auto upload off'}</span></div>
+${st.rootUrl ? html`<p><a class="btn" href="${st.rootUrl}" target="_blank" rel="noopener">Open “${st.mode === 'sa' ? 'Shared Drive folder' : st.rootName}” in Google Drive</a></p>` : html`<p class="small muted">The “${st.rootName}” folder is created with the first upload (or press Test).</p>`}
+<p class="small" data-drive-counts><b>${st.synced}</b> of ${st.entries} EOD${st.entries === 1 ? '' : 's'} in Drive · <b>${st.pending}</b> waiting${st.failing ? html` · <span class="warn">${st.failing} retrying${st.dead ? ` (${st.dead} gave up)` : ''}</span>` : ''} · last upload ${when(st.lastSync)}</p>
+${st.lastError && st.failing ? html`<p class="small muted">Last error: ${st.lastError}</p>` : ''}
+<div class="row3"><form method="post" action="/settings/drive/sync-all"><button class="btn" type="submit" style="width:100%">Sync all EODs</button></form>
+<form method="post" action="/settings/drive/test"><button class="btn" type="submit" style="width:100%">Test</button></form>
+<form method="post" action="/settings/drive/disconnect" data-confirm="Disconnect Google Drive? Uploads stop; files already in Drive stay."><button class="btn danger" type="submit" style="width:100%">Disconnect</button></form></div>`
+    : html`<h2>Not connected</h2><p class="small">Every EOD can be copied into a Google Drive folder: one folder per EOD with a PDF of the whole day and every receipt, named so they sort by date. Saving an EOD never waits for Drive.</p>
+${st.mode === 'oauth' ? (st.clientIdSet && st.secretSet ? html`<form method="post" action="/settings/drive/connect"><button class="btn primary big" type="submit"${waiting ? raw(' disabled') : ''}>Connect Google Drive</button></form>`
+    : html`<p class="small warn">Step 1: paste the OAuth Client ID and secret below and Save. (How to get them: README, “Google Drive”.)</p>`) : html`<p class="small warn">Paste the service account key and the Shared Drive folder below, then Save.</p>`}`}
+</div>`}
+
+<form method="post" action="/settings/drive/save" class="card stack" id="drive-form" autocomplete="off">
+<h2>Setup</h2>
+<fieldset class="stack plain"><legend><b>Connect with</b></legend>
+<label class="check"><input type="radio" name="mode" value="oauth"${chk(st.mode === 'oauth')} data-drive-mode> A Google account (simplest; files use that account's storage)</label>
+<label class="check"><input type="radio" name="mode" value="sa"${chk(st.mode === 'sa')} data-drive-mode> A service account + a Shared Drive (Workspace)</label></fieldset>
+<div class="stack" data-mode="oauth">
+<label>OAuth Client ID <span class="muted">(type “TVs and Limited Input devices”)</span><input name="client_id" value="${st.clientId}" placeholder="${st.clientIdSet ? (st.clientFromEnv ? 'set by GDRIVE_CLIENT_ID' : 'saved: leave blank to keep') : '…apps.googleusercontent.com'}" autocapitalize="off" spellcheck="false"></label>
+<label>Client secret<input name="client_secret" type="password" placeholder="${st.secretSet ? 'saved: leave blank to keep' : ''}" autocomplete="new-password"></label>
+<label>Folder name in Drive<input name="root_name" value="${st.rootName}" maxlength="100"></label>
+</div>
+<div class="stack" data-mode="sa">
+<label>Service account key <span class="muted">(paste the downloaded .json)</span><textarea name="sa_json" rows="3" spellcheck="false" autocapitalize="off" placeholder="${st.saSet ? `saved (${st.saEmail}): leave blank to keep` : '{ "type": "service_account", ... }'}"></textarea></label>
+<label>Shared Drive folder <span class="muted">(link or ID; add the service account to the Shared Drive as Content manager)</span><input name="shared_folder" value="${st.sharedFolderId}" placeholder="https://drive.google.com/drive/folders/…" autocapitalize="off" spellcheck="false"></label>
+</div>
+<label class="check"><input type="checkbox" name="auto" value="1"${chk(st.auto)}> Upload automatically when an EOD is saved or edited</label>
+<fieldset class="stack plain"><legend><b>When an EOD is deleted in the app</b></legend>
+<label class="check"><input type="radio" name="on_delete" value="mark"${chk(st.onDelete === 'mark')}> Keep its Drive folder, renamed “(deleted) …”</label>
+<label class="check"><input type="radio" name="on_delete" value="trash"${chk(st.onDelete === 'trash')}> Move its Drive folder to the trash</label></fieldset>
+<label>Share the folder with <span class="muted">(emails, comma or one per line; Google emails them a link)</span><textarea name="share" rows="2" autocapitalize="off" spellcheck="false" placeholder="producer@company.com">${shareList}</textarea></label>
+<label>They can<select name="share_role"><option value="reader"${st.shareRole === 'reader' ? raw(' selected') : ''}>View</option><option value="writer"${st.shareRole === 'writer' ? raw(' selected') : ''}>Edit</option></select></label>
+<button class="btn primary big" type="submit">Save</button></form>
+
+<div class="card stack"><h2>How it's organized</h2>
+<pre class="tree">${st.mode === 'sa' ? 'Shared Drive folder' : st.rootName}/
+  2026/
+    2026-11 November/
+      2026-11-13 Villanova promo (Film shoot)/
+        EOD 2026-11-13 Villanova promo.pdf
+        2026-11-13 Villanova promo - Lunch for crew - $86.40 (Personal).jpg
+        2026-11-13 Villanova promo - Gas - $63.65 (Card) 1.jpg</pre>
+<p class="small muted">The PDF has every field, each person's hours and the expenses. Edits replace the PDF (Drive keeps old versions) and add or remove receipts. “Clear all data” in the app never deletes anything in Drive.</p></div>`;
+  return layout(req, { title: 'Google Drive', active: 'settings', body, fab: false, scripts: ['/drive.js'] });
+}
+
 const fmtMB = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : b >= 1024 ? Math.round(b / 1024) + ' KB' : b + ' bytes');
 function clearPage(req, { stats, needPw, error, scope }) {
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
@@ -292,7 +359,7 @@ ${error ? html`<p class="alert" role="alert">${error}</p>` : ''}
 <div class="card danger-zone stack">
 <p class="warnbig"><b>This permanently deletes ${plural(stats.entries, 'EOD entry').replace('entrys', 'entries')}, ${plural(stats.receipts, 'receipt')} and ${fmtMB(stats.uploadBytes)} of uploaded files.</b> People will lose every logged day, hour and expense.</p>
 <p class="small"><b>Download a copy first:</b> <a href="/export/hours.csv">All hours (CSV)</a> · <a href="/export/expenses.csv">All expenses (CSV)</a></p>
-<p class="small muted">Before clearing, a backup copy of the database is saved in <code>/data/backups/</code> on the server (the last 3 are kept). Receipt image/PDF files are <b>not</b> in that backup; once cleared they are gone.</p>
+<p class="small muted">Before clearing, a backup copy of the database is saved in <code>/data/backups/</code> on the server (the last 3 are kept). Receipt image/PDF files are <b>not</b> in that backup; once cleared they are gone from the app. Copies already uploaded to Google Drive are <b>not</b> deleted.</p>
 </div>
 <form method="post" action="/settings/clear" class="card stack" id="clear-form" autocomplete="off">
 <fieldset class="stack plain"><legend><b>What to clear</b></legend>
@@ -309,4 +376,4 @@ function message(req, { title, text, back }) {
   return layout(req, { title, body: html`<div class="card narrow"><h1>${title}</h1><p>${text}</p><a class="btn big" href="${back || '/'}">Back</a></div>` });
 }
 
-module.exports = { layout, login, adminLogin, week, list, detail, form, settings, scheduleForm, summaryPage, clearPage, message, tzShort };
+module.exports = { layout, login, adminLogin, week, list, detail, form, settings, scheduleForm, summaryPage, clearPage, drivePage, message, tzShort };

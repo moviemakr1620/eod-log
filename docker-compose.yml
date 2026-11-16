@@ -35,6 +35,9 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-}
       TRUST_PROXY: ${TRUST_PROXY:-}
+      GDRIVE_CLIENT_ID: ${GDRIVE_CLIENT_ID:-}           # optional: or paste it in Settings > Google Drive
+      GDRIVE_CLIENT_SECRET: ${GDRIVE_CLIENT_SECRET:-}
+      GDRIVE_SA_FILE: ${GDRIVE_SA_FILE:-}               # optional: path to a service account .json inside /data
     volumes:
       - eod-data:/data                     # SQLite database + receipt uploads
     read_only: true

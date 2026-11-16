@@ -7,6 +7,7 @@ const DOCKER_EXEC = process.env.DOCKER_EXEC || '';
 const inData = (cmd) => execSync(`${DOCKER_EXEC} sh -c ${JSON.stringify(cmd)}`).toString().trim();
 const BASE = process.env.BASE || 'http://127.0.0.1:7240';
 const MAILPIT = process.env.MAILPIT || '';
+const GMOCK = process.env.GMOCK || ''; // fake Google (scripts/mock-google.mjs) the server was started against
 let fails = 0;
 const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!cond) fails++; };
 const jar = { team: '', admin: '', team2: '' };
@@ -178,6 +179,50 @@ if (MAILPIT) {
   await req(`/settings/n/${opsId}/delete`, { method: 'POST' });
 }
 
+// Google Drive (against the fake Google server)
+let driveFilesBeforeClear = 0;
+if (GMOCK) {
+  const gm = async (p, method = 'POST') => (await fetch(GMOCK + p, { method })).json();
+  const tree = (st) => { const by = Object.fromEntries(st.files.map((f) => [f.id, f])); const full = (f) => (f.parents && by[f.parents[0]] ? full(by[f.parents[0]]) + '/' : '') + f.name; return st.files.filter((f) => !f.inTrash).map(full).sort(); };
+  const waitFor = async (fn, ms = 15000) => { const t = Date.now(); while (Date.now() - t < ms) { if (await fn()) return true; await new Promise((r) => setTimeout(r, 400)); } return false; };
+  await gm('/mock/reset');
+  await req('/login', { who: 'team2', method: 'POST', body: new URLSearchParams({ name: 'Crew', password: process.env.APP_PASSWORD }) });
+  r = await req('/settings/drive', { who: 'team2' }); ok(r.status === 303 && /admin-login/.test(r.headers.get('location')), 'non-admin cannot open Drive settings');
+  h = await text(await req('/settings/drive')); ok(h.includes('Not connected') && h.includes('TVs and Limited Input devices'), 'Drive page: not connected, asks for an OAuth client');
+  r = await req('/settings/drive/save', { method: 'POST', body: new URLSearchParams({ mode: 'oauth', client_id: 'test-client.apps.googleusercontent.com', client_secret: 'test-secret', root_name: 'KPI EOD Log', auto: '1', on_delete: 'mark', share: 'producer@kpi.example', share_role: 'reader' }) });
+  ok(r.status === 303 && /after%20you%20connect/.test(r.headers.get('location')), 'save OAuth client (sharing deferred until connected)');
+  h = await text(await req('/settings/drive')); ok(!h.includes('test-secret') && h.includes('saved: leave blank to keep') && h.includes('Connect Google Drive'), 'client secret is never shown back');
+  r = await req('/settings/drive/connect', { method: 'POST' }); ok(r.status === 303, 'start device sign-in');
+  h = await text(await req('/settings/drive')); ok(/MOCK-[0-9A-F]{4}/.test(h) && h.includes('www.google.com/device') && h.includes('data-device-wait'), 'shows the code and google.com/device');
+  ok((await (await req('/settings/drive/status.json')).json()).dev.state === 'waiting', 'status: waiting for approval');
+  await gm('/mock/approve');
+  ok(await waitFor(async () => (await (await req('/settings/drive/status.json')).json()).dev.state === 'done'), 'approved -> connected');
+  h = await text(await req('/settings/drive'));
+  ok(h.includes('Connected') && h.includes('jason@kpi.example') && /drive\.google\.com\/drive\/folders\/f/.test(h), 'shows account and a link to the folder');
+  let st = await gm('/mock/state', 'GET');
+  const rootF = st.files.find((f) => f.name === 'KPI EOD Log');
+  ok(rootF && (st.perms[rootF.id] || []).some((p) => p.emailAddress === 'producer@kpi.example' && p.role === 'reader'), 'folder shared with the listed email after connecting');
+  r = await req('/settings/drive/sync-all', { method: 'POST' }); ok(r.status === 303 && /Queued%20\d+/.test(r.headers.get('location')), 'Sync all queues existing EODs');
+  ok(await waitFor(async () => (await (await req('/settings/drive/status.json')).json()).pending === 0), 'queue drains');
+  st = await gm('/mock/state', 'GET'); let tr = tree(st);
+  const acme = tr.find((x) => x.endsWith(`${d1} Acme Spring Promo (Film shoot)`));
+  ok(acme && acme.startsWith(`KPI EOD Log/${d1.slice(0, 4)}/${d1.slice(0, 7)} `), `entry folder organized by year/month: ${acme}`);
+  ok(tr.some((x) => x.startsWith(acme + '/EOD ') && x.endsWith('.pdf')) && tr.filter((x) => x.startsWith(acme + '/') && x.includes(' - ')).length >= 2, 'entry PDF and receipts uploaded');
+  ok(tr.some((x) => x.startsWith(acme + '/') && x.includes('Gas for Sprinter - $63.65 (Personal)')), 'receipt named with expense, amount and who paid');
+  r = await req('/settings/drive/test', { method: 'POST' }); ok(/Test%20passed/.test(r.headers.get('location')), 'Test button passes');
+  // a new EOD uploads by itself; an injected Drive failure is retried
+  await gm('/mock/fail?n=2&status=503');
+  r = await req('/new', { method: 'POST', body: entryForm({ fields: { job: 'Drive retry check', date: today, job_type: 'AV install' }, crew: [{ name: 'Jason', start: '08:00', stop: '12:00' }] }) });
+  const idDrive = Number(/\/e\/(\d+)/.exec(r.headers.get('location'))[1]);
+  ok(r.status === 303, 'saving an EOD does not wait for Drive (even while Drive fails)');
+  ok(await waitFor(async () => tree(await gm('/mock/state', 'GET')).some((x) => x.endsWith('Drive retry check (AV install)')), 20000), 'new EOD reaches Drive after a retry');
+  r = await req(`/e/${idDrive}/delete`, { method: 'POST' });
+  ok(await waitFor(async () => tree(await gm('/mock/state', 'GET')).some((x) => x.endsWith('(deleted) ' + today + ' Drive retry check (AV install)'))), 'deleted EOD: Drive folder kept, renamed "(deleted)"');
+  h = await text(await req('/settings')); ok(h.includes('Google Drive') && h.includes('jason@kpi.example'), 'Settings shows the Drive status');
+  driveFilesBeforeClear = (await gm('/mock/state', 'GET')).files.filter((f) => !f.inTrash).length;
+  h = await text(await req('/settings/clear')); ok(h.includes('Google Drive are <b>not</b> deleted'), 'clear page says Drive copies are kept');
+}
+
 // danger zone: clear all data
 {
   const det = await text(await req(`/e/${id1}`));
@@ -215,6 +260,11 @@ if (MAILPIT) {
   r = await req('/settings/clear', { method: 'POST', body: new URLSearchParams({ ...good, scope: 'all' }) });
   h = await text(await req(r.headers.get('location')));
   ok(h.includes('plus notifications') && h.includes('No notifications'), 'clear everything also removes notifications');
+  if (GMOCK) {
+    const left = (await (await fetch(GMOCK + '/mock/state')).json()).files.filter((f) => !f.inTrash).length;
+    ok(left === driveFilesBeforeClear, `Clear all data leaves Google Drive alone (${left} files)`);
+    h = await text(await req('/settings/drive')); ok(h.includes('Connected'), 'Drive stays connected after clearing everything');
+  }
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');

@@ -112,6 +112,31 @@ for (const [name, bt, dev] of [['WebKit iPhone 13', webkit, devices['iPhone 13']
   await p.locator('.weeknav a[aria-label="Previous period"]').click(); await p.waitForURL(/from=/);
   await Promise.all([p.waitForURL(editUrl), p.locator('[data-back]').click()]);
   ok(p.url() === editUrl, `${name}: Back from preview (after paging) returns to the notification`);
+  // Google Drive settings: connect with the device code (against the fake Google), toggle modes, disconnect
+  if (process.env.GMOCK) {
+    await p.goto(BASE + '/settings');
+    await Promise.all([p.waitForURL(/\/settings\/drive$/), p.locator('a[href="/settings/drive"]').click()]);
+    if (await p.locator('button', { hasText: 'Disconnect' }).count()) await Promise.all([p.waitForURL(/Disconnected/), p.locator('button', { hasText: 'Disconnect' }).click()]);
+    ok(await p.locator('text=Not connected').count() === 1, `${name}: Drive page shows Not connected`);
+    ok(await p.locator('[data-mode=sa]').isHidden() && await p.locator('input[name=client_id]').isVisible(), `${name}: Google account fields shown, service account fields hidden`);
+    await p.locator('input[name=mode][value=sa]').check();
+    ok(await p.locator('textarea[name=sa_json]').isVisible() && await p.locator('input[name=client_id]').isHidden(), `${name}: switching to Shared Drive shows its fields`);
+    await p.locator('input[name=mode][value=oauth]').check();
+    await p.fill('input[name=client_id]', 'test-client.apps.googleusercontent.com'); await p.fill('input[name=client_secret]', 'test-secret');
+    await Promise.all([p.waitForURL(/msg=Saved/), p.locator('#drive-form button[type=submit]').click()]);
+    await Promise.all([p.waitForURL(/\/settings\/drive/), p.locator('button', { hasText: 'Connect Google Drive' }).click()]);
+    const code = (await p.locator('.devcode').textContent()).trim();
+    ok(/^MOCK-/.test(code) && await p.locator('a[href="https://www.google.com/device"]').isVisible(), `${name}: device code ${code} and google.com/device link shown`);
+    const pw2 = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth); ok(pw2 <= 1, `${name}: Drive page fits the screen (${pw2}px)`);
+    await fetch(process.env.GMOCK + '/mock/approve', { method: 'POST' });
+    await p.waitForURL(/msg=Connected/, { timeout: 15000 });
+    t = await p.locator('main').innerText();
+    ok(t.includes('jason@kpi.example') && await p.locator('a', { hasText: 'in Google Drive' }).count() >= 0, `${name}: page switches to Connected by itself after approval`);
+    await Promise.all([p.waitForURL(/Test%20passed|msg=Test/), p.locator('button', { hasText: 'Test' }).click()]);
+    ok(await p.locator('a', { hasText: 'in Google Drive' }).count() === 1, `${name}: Test passes and the folder link appears`);
+    await Promise.all([p.waitForURL(/Disconnected/), p.locator('button', { hasText: 'Disconnect' }).click()]);
+    ok(dialogs.some((d) => /Disconnect Google Drive/.test(d)) && (await p.locator('main').innerText()).includes('Not connected'), `${name}: Disconnect asks first, then disconnects`);
+  }
   // danger zone
   await p.goto(BASE + '/settings');
   await Promise.all([p.waitForURL(/\/settings\/clear$/), p.locator('.danger-zone a', { hasText: 'Clear all data' }).click()]);

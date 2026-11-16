@@ -10,6 +10,7 @@ const auth = require('./auth');
 const views = require('./views');
 const summary = require('./summary');
 const mailer = require('./mailer');
+const drive = require('./drive');
 const { isDate, weekStart, todayIn, addDays, str, nowParts, TIMEZONES } = require('./util');
 const H = require('../public/hours.js');
 
@@ -124,6 +125,7 @@ app.post('/new', withUpload, (req, res) => {
     return send(res, views.message(req, { title: 'Missing info', text: data.errors.join('. ') + '.', back: '/new' }), 400);
   }
   const id = store.create(data, req.files, (req.session && req.session.n) || null);
+  drive.enqueue(id);
   res.redirect(303, `/e/${id}?saved=1`);
 });
 
@@ -136,9 +138,10 @@ app.post('/e/:id/edit', loadEntry, withUpload, (req, res) => {
   let extra = []; try { extra = JSON.parse(req.body.delete_receipts_json || '[]'); } catch { /* ignore */ }
   const del = [].concat(req.body.delete_receipt || [], Array.isArray(extra) ? extra : []);
   store.update(req.entry.id, data, req.files, del);
+  drive.enqueue(req.entry.id);
   res.redirect(303, `/e/${req.entry.id}?saved=1`);
 });
-app.post('/e/:id/delete', loadEntry, requireAdmin, (req, res) => { store.remove(req.entry.id); res.redirect(303, '/?week=' + weekStart(req.entry.date)); });
+app.post('/e/:id/delete', loadEntry, requireAdmin, (req, res) => { drive.onDelete(req.entry.id); store.remove(req.entry.id); res.redirect(303, '/?week=' + weekStart(req.entry.date)); });
 
 app.get('/r/:id', (req, res) => {
   const r = store.receipt(Number(req.params.id));
@@ -194,7 +197,7 @@ function settingsPage(req, res, extra = {}, status = 200) {
   const lastBy = {};
   mailer.recentSends(500).forEach((r) => { if (!lastBy[r.schedule_id]) lastBy[r.schedule_id] = r; });
   const schedules = mailer.listSchedules().map((x) => ({ ...x, desc: mailer.describe(x), last: lastBy[x.id], preview: mailer.previewPeriod(x) }));
-  send(res, views.settings(req, { smtp, schedules, log: mailer.recentSends(15), stats: dataStats(), ...extra }), status);
+  send(res, views.settings(req, { smtp, schedules, log: mailer.recentSends(15), stats: dataStats(), drive: drive.status(), ...extra }), status);
 }
 app.get('/settings', requireAdmin, (req, res) => settingsPage(req, res, { msg: req.query.msg ? String(req.query.msg).slice(0, 200) : '' }));
 app.get('/settings/n/new', requireAdmin, (req, res) => send(res, views.scheduleForm(req, { sch: { name: '', recipients: '', frequency: 'daily', weekday: 1, send_time: '18:00', tz: cfg.TZ, covers: 'today', attach: 0, enabled: 1 }, isNew: true })));
@@ -272,7 +275,8 @@ app.post('/settings/clear', requireAdmin, async (req, res) => {
   }
   db.transaction(() => {
     db.exec('DELETE FROM receipts; DELETE FROM expenses; DELETE FROM crew; DELETE FROM entries;');
-    if (scope === 'all') db.exec('DELETE FROM sends; DELETE FROM schedules; DELETE FROM settings;');
+    if (scope === 'all') db.exec("DELETE FROM sends; DELETE FROM schedules; DELETE FROM settings WHERE substr(key,1,3) <> 'gd_';"); // Google Drive connection is kept
+    drive.forgetEntries(); // entry ids restart, so forget the id -> Drive file mapping (files in Drive are NOT deleted)
   })();
   let files = [];
   try { files = fs.readdirSync(cfg.UPLOAD_DIR); } catch { /* none */ }
@@ -282,6 +286,58 @@ app.post('/settings/clear', requireAdmin, async (req, res) => {
   console.log(`[eod-log] data cleared (${scope}) by ${(req.session && req.session.n) || 'admin'}: ${before.entries} entries, ${before.receipts} receipts; backup ${backup}`);
   const msg = `Cleared ${before.entries} EOD${before.entries === 1 ? '' : 's'} and ${before.receipts} receipt${before.receipts === 1 ? '' : 's'}${scope === 'all' ? ', plus notifications and settings' : ''}. A database backup was saved as backups/${path.basename(backup)}.`;
   res.redirect(303, '/settings?msg=' + encodeURIComponent(msg));
+});
+
+// ---- Google Drive
+const parseFolderId = (v) => { const s = String(v || '').trim(); const m = /folders\/([\w-]{10,})/.exec(s) || /[?&]id=([\w-]{10,})/.exec(s); return m ? m[1] : (/^[\w-]{10,}$/.test(s) ? s : ''); };
+const drivePage = (req, res, extra = {}, status = 200) => send(res, views.drivePage(req, { st: drive.status(), dev: drive.deviceState(), ...extra }), status);
+const driveBack = (res, msg, isErr) => res.redirect(303, '/settings/drive?' + (isErr ? 'err=' : 'msg=') + encodeURIComponent(String(msg).slice(0, 300)));
+app.get('/settings/drive', requireAdmin, (req, res) => drivePage(req, res, { msg: str(req.query.msg, 300) || '', err: str(req.query.err, 300) || '' }));
+app.get('/settings/drive/status.json', requireAdmin, (req, res) => { const st = drive.status(); res.json({ dev: drive.deviceState(), connected: st.connected, pending: st.pending, synced: st.synced }); });
+app.post('/settings/drive/save', requireAdmin, async (req, res) => {
+  const b = req.body;
+  const m = b.mode === 'sa' ? 'sa' : 'oauth';
+  const prevMode = drive.S.get('mode') || 'oauth';
+  drive.S.set('mode', m);
+  if (m !== prevMode) { drive.resetToken(); drive.resetMapping(); }
+  if (b.client_id !== undefined && str(b.client_id, 300)) drive.S.set('client_id', str(b.client_id, 300));
+  if (str(b.client_secret, 300)) drive.S.set('client_secret', str(b.client_secret, 300));
+  if (str(b.sa_json, 20000)) {
+    let k; try { k = JSON.parse(b.sa_json); } catch { return driveBack(res, 'That service account key is not valid JSON. Paste the whole downloaded .json file.', true); }
+    if (!k.client_email || !k.private_key) return driveBack(res, 'That JSON has no client_email/private_key. Use a service account key file.', true);
+    drive.S.set('sa_json', JSON.stringify({ type: k.type, client_email: k.client_email, private_key: k.private_key, private_key_id: k.private_key_id, token_uri: k.token_uri }));
+    drive.resetToken();
+  }
+  if (b.shared_folder !== undefined) {
+    const fid = parseFolderId(b.shared_folder);
+    if (b.shared_folder.trim() && !fid) return driveBack(res, 'Could not find a folder ID in that link.', true);
+    if (fid !== (drive.S.get('shared_folder_id') || '')) { drive.S.set('shared_folder_id', fid); if (m === 'sa') drive.resetMapping(); }
+  }
+  const rn = str(b.root_name, 100); if (rn) drive.S.set('root_name', rn);
+  drive.S.set('on_delete', b.on_delete === 'trash' ? 'trash' : 'mark');
+  drive.S.set('auto', b.auto === '1' ? '1' : '0');
+  const emails = mailer.parseList(b.share);
+  const role = b.share_role === 'writer' ? 'writer' : 'reader';
+  let warn = '';
+  if (drive.connected()) {
+    try { const errs = await drive.applySharing(emails, role); if (errs.length) warn = ' Sharing problem: ' + errs.join('; '); } catch (err) { warn = ' Could not update sharing: ' + err.message; }
+  } else if (emails.length) { drive.S.set('share_pending', emails.join(', ')); drive.S.set('share_role', role); warn = ' Sharing will be applied after you connect.'; }
+  driveBack(res, 'Saved.' + warn, Boolean(warn && !/after you connect/.test(warn)));
+});
+app.post('/settings/drive/connect', requireAdmin, async (req, res) => {
+  try { await drive.startDevice(); res.redirect(303, '/settings/drive#connect'); } catch (err) { driveBack(res, 'Could not start the Google sign-in: ' + err.message, true); }
+});
+app.post('/settings/drive/cancel', requireAdmin, (req, res) => { drive.cancelDevice(); res.redirect(303, '/settings/drive'); });
+app.post('/settings/drive/test', requireAdmin, async (req, res) => {
+  try { await drive.test(); driveBack(res, 'Test passed: the folder is reachable and a test file was written (and then removed).'); } catch (err) { driveBack(res, 'Test failed: ' + err.message, true); }
+});
+app.post('/settings/drive/sync-all', requireAdmin, (req, res) => {
+  if (!drive.connected()) return driveBack(res, 'Connect Google Drive first.', true);
+  const n = drive.enqueueAll(); driveBack(res, `Queued ${n} EOD${n === 1 ? '' : 's'} for upload. This page shows progress.`);
+});
+app.post('/settings/drive/disconnect', requireAdmin, async (req, res) => {
+  if ((drive.S.get('mode') || 'oauth') === 'sa') { drive.S.del('sa_json'); drive.resetToken(); } else await drive.disconnect();
+  driveBack(res, 'Disconnected. Files already in Google Drive are untouched.');
 });
 
 // ---- CSV export
@@ -316,4 +372,5 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 if (auth.passwordRequired() && !cfg.APP_PASSWORD) console.warn('[eod-log] WARNING: APP_PASSWORD is not set. Nobody can sign in until you set it.');
 if (!cfg.ADMIN_PASSWORD) console.warn('[eod-log] ADMIN_PASSWORD not set: everyone signed in can change settings and delete entries.');
 mailer.startScheduler();
+drive.start();
 app.listen(cfg.PORT, '0.0.0.0', () => console.log(`[eod-log] listening on :${cfg.PORT}, data in ${cfg.DATA_DIR}`));

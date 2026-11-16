@@ -88,5 +88,24 @@ await shot('09-settings-danger-zone');
 await page.goto(BASE + '/settings/clear', { waitUntil: 'networkidle0' });
 await shot('10-clear-all-data'); await shot('10-clear-all-data-full', true);
 console.log('clear page overflow px', await overflow());
+
+// Google Drive settings (needs GMOCK: the fake Google server the app was started against)
+if (process.env.GMOCK) {
+  await page.goto(BASE + '/settings/drive', { waitUntil: 'networkidle0' });
+  await shot('11-drive-setup'); await shot('11-drive-setup-full', true);
+  console.log('drive page overflow px', await overflow());
+  await page.type('input[name=client_id]', 'test-client.apps.googleusercontent.com'); await page.type('input[name=client_secret]', 'test-secret');
+  await page.$eval('textarea[name=share]', (el) => { el.value = 'producer@kpi.example, office@kpi.example'; });
+  await Promise.all([page.waitForNavigation(), page.click('#drive-form button[type=submit]')]);
+  await Promise.all([page.waitForNavigation(), page.$eval('form[action="/settings/drive/connect"] button', (b) => b.click())]);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await shot('12-drive-code');
+  await fetch(process.env.GMOCK + '/mock/approve', { method: 'POST' });
+  await page.waitForNavigation({ timeout: 15000 });
+  await Promise.all([page.waitForNavigation(), page.$eval('form[action="/settings/drive/sync-all"] button', (b) => b.click())]);
+  await new Promise((r) => setTimeout(r, 4000));
+  await page.goto(BASE + '/settings/drive', { waitUntil: 'networkidle0' });
+  await shot('13-drive-connected'); await shot('13-drive-connected-full', true);
+}
 console.log('JS errors:', errors.length ? errors : 'none');
 await browser.close();
