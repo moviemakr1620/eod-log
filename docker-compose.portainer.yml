@@ -1,9 +1,9 @@
-# Portainer "Web editor" variant: uses the image you built with `docker compose build` on the NAS
-# (Portainer's web editor can't build from this repo). Put the variables in the stack's
+# Portainer "Web editor" variant: pulls the prebuilt image that GitHub Actions publishes to
+# ghcr.io on every push to main (works on amd64 and arm64 NAS). Put the variables in the stack's
 # "Environment variables" section instead of a .env file.
 services:
   eod-log:
-    image: eod-log:latest
+    image: ghcr.io/moviemakr1620/eod-log:latest
     container_name: eod-log
     restart: unless-stopped
     ports:

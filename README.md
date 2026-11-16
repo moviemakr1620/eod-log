@@ -91,11 +91,15 @@ then copy `backup.sqlite` and `uploads/` off the NAS (Hyper Backup, rsync, etc.)
 
 ### Portainer
 
-Portainer's **Web editor** can't build from this repo, so build on the NAS first (`git pull && docker compose build`, above). Then:
-1. **Stacks > Add stack > Web editor**, name it `eod-log`, paste **`docker-compose.portainer.yml`** (it uses the `eod-log:latest` image you just built).
+**Easiest: use the prebuilt image.** Every push to `main` makes GitHub Actions build the app and publish it as `ghcr.io/moviemakr1620/eod-log:latest` (amd64 and arm64, so Intel and ARM NAS both work). Nothing needs to be built on the NAS.
+1. **Stacks > Add stack > Web editor**, name it `eod-log`, and paste **`docker-compose.portainer.yml`**.
 2. Under **Environment variables**, add at least `APP_PASSWORD`, and ideally `ADMIN_PASSWORD`, `PUBLIC_URL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` and `MANAGER_EMAILS` (every variable is listed below).
 3. **Deploy the stack.** The container should turn *healthy*.
-4. To update later: `git pull && docker compose build` on the NAS, then in Portainer open the stack and click **Update the stack** (with "Re-pull image" off, since the image is local).
+4. To update later: open the stack, click **Update the stack**, and turn on **Re-pull image**.
+
+The image package must be public for Portainer to pull it without a login (GitHub > your profile > Packages > `eod-log` > Package settings > Change visibility > Public). If you keep it private, add a registry in Portainer (**Registries > Add registry > Custom**, URL `ghcr.io`, your GitHub username, and a personal access token with only `read:packages`).
+
+**Alternative: build from the repo.** **Stacks > Add stack > Repository**, URL `https://github.com/moviemakr1620/eod-log`, reference `refs/heads/main`, compose path `docker-compose.yml`. Portainer clones and builds it itself. Add the same environment variables.
 
 Pick one way to run it: either `docker compose up -d` in the folder or the Portainer stack. They use the same container name.
 *Easiest overall:* run `docker compose up -d` in the folder; Portainer still shows the container.
