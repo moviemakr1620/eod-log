@@ -2,7 +2,7 @@ const cfg = require('./config');
 const H = require('../public/hours.js');
 const { html, raw, prettyDate, rangeLabel, money, addDays, TIMEZONES, tzShort, tzLabel, JOB_TYPES, EXPENSE_CATS, WDL } = require('./util');
 
-const V = '10'; // static asset cache-buster
+const V = '14'; // static asset cache-buster
 const icon = {
   plus: raw('<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" fill="none"/></svg>'),
   left: raw('<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'),
@@ -128,7 +128,6 @@ ${e.crew.map((c) => html`<div class="card crewcard"><div class="crew-top"><h3>${
 <dl class="times">${row('Start', t(c.start))}${row('Stop', t(c.stop))}
 ${(c.meals || []).map((m, i) => row(`Meal ${c.meals.length > 1 ? i + 1 : ''}`, `${t(m.start) || '?'} – ${t(m.end) || '?'}`))}
 ${row('On site', t(c.on_set))}${row('Off site', t(c.wheels_up))}${row('On-site hours', c.onsite_min != null ? hrs(c.onsite_min) : '')}
-${row('Leave shop', t(c.leave_shop))}${row('Return to shop', t(c.return_shop))}
 ${c.hours_override != null ? row('Hours (typed in)', c.hours_override + ' h') : ''}${row('Edit / DIT', c.edit_hours ? c.edit_hours + ' h' : '')}</dl>
 ${c.note ? html`<p class="small">${c.note}</p>` : ''}</div>`)}
 ${e.expenses.length || general.length ? html`<h2 class="sec">Expenses <span class="muted">${money(e.expense_total)}</span></h2>
@@ -255,7 +254,7 @@ function scheduleForm(req, { sch, isNew }) {
 <label data-show="daily weekdays">Covers<select name="covers"><option value="today"${sel('today', sch.covers)}>That day (send in the evening)</option><option value="yesterday"${sel('yesterday', sch.covers)}>The day before (send in the morning)</option></select></label>
 <p class="small muted" data-show="weekly">A weekly email covers the previous Monday–Sunday.</p>
 <p class="small muted" data-show="weekdays">Monday's email also covers the weekend, so nothing is missed.</p>
-<div class="row2"><label>Send at<input type="time" name="send_time" value="${sch.send_time}" required></label>
+<div class="row2"><label>Send at <span class="muted">(24h, e.g. 08:00 or 18:30)</span><input name="send_time" value="${sch.send_time}" required placeholder="hh:mm" autocomplete="off" pattern="\s*\d{1,2}(:?\d{2})?\s*([aApP][mM]?)?\s*"></label>
 <label>Time zone<select name="tz">${TIMEZONES.map(([v, l]) => html`<option value="${v}"${sel(v, sch.tz)}>${l}</option>`)}</select></label></div>
 <label class="check"><input type="checkbox" name="attach" value="1"${sch.attach ? raw(' checked') : ''}> Attach receipt files (up to 15 MB)</label>
 <p class="small muted">No EODs in the period = no email. Every run is listed in the notification log on the Settings page.</p>

@@ -5,7 +5,7 @@
   var crewList = document.getElementById('crew-list');
   var expList = document.getElementById('exp-list');
   var H = window.EODHours;
-  var TIMES = ['start', 'stop', 'on_set', 'wheels_up', 'leave_shop', 'return_shop'];
+  var TIMES = ['start', 'stop', 'on_set', 'wheels_up'];
   var seq = 0;
   var busy = 0;
   var deleteReceipts = [];
@@ -14,29 +14,59 @@
   function el(html) { var t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstChild; }
   function q(root, sel) { return root.querySelector(sel); }
   function qa(root, sel) { return Array.prototype.slice.call(root.querySelectorAll(sel)); }
-  function timeInput(f, label, v) { return '<label>' + label + '<input type="time" data-f="' + f + '" value="' + esc(v) + '"></label>'; }
+  // Touch phones get the native time wheel (it always gives a full time). Desktop browsers get a text field instead:
+  // their native time inputs show "--:--" segments and stay EMPTY if only the hour is changed, so nothing saved.
+  var TOUCH = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+  function shown(v) { var n = H.norm(v); if (!n) return v || ''; if (TOUCH) return n; return H.ampm(n).replace(/(am|pm)$/, function (x) { return ' ' + x.toUpperCase(); }); }
+  function tin(attr, v) {
+    return TOUCH ? '<input type="time" ' + attr + ' value="' + esc(H.norm(v) || '') + '">'
+      : '<input type="text" class="tfield" ' + attr + ' value="' + esc(shown(v)) + '" placeholder="hh:mm" list="dl-times" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="next">';
+  }
+  function setVal(input, v) { input.value = shown(v || ''); input.classList.remove('bad'); }
+  function badTime(input) { return (input.validity && input.validity.badInput) || (input.value.trim() !== '' && !H.norm(input.value)); }
+  function timeInput(f, label, v) { return '<label>' + label + tin('data-f="' + f + '"', v) + '</label>'; }
+  if (!TOUCH) { // quick picker: 15-minute steps as suggestions under each time field
+    var dlt = document.createElement('datalist'); dlt.id = 'dl-times';
+    for (var mm = 0; mm < 1440; mm += 15) { var o = document.createElement('option'); o.value = shown((mm < 600 ? '0' : '') + Math.floor(mm / 60) + ':' + (mm % 60 < 10 ? '0' : '') + mm % 60); dlt.appendChild(o); }
+    document.body.appendChild(dlt);
+    form.addEventListener('focusout', function (ev) {
+      var i = ev.target; if (!i.classList || !i.classList.contains('tfield')) return;
+      var n = H.norm(i.value);
+      if (n) { i.value = shown(n); i.classList.remove('bad'); } else i.classList.toggle('bad', i.value.trim() !== '');
+      var row = i.closest('.crew-row'); if (row) updateCrew(row);
+    });
+    form.addEventListener('input', function (ev) { if (ev.target.classList && ev.target.classList.contains('tfield')) ev.target.classList.remove('bad'); });
+  }
 
   // ---------- crew
   function mealHtml(m) {
     m = m || {};
-    return '<div class="meal"><label>Meal start' + '<input type="time" data-m="start" value="' + esc(m.start) + '"></label>' +
-      '<label>Meal end<input type="time" data-m="end" value="' + esc(m.end) + '"></label>' +
+    return '<div class="meal"><label>Meal start' + tin('data-m="start"', m.start) + '</label>' +
+      '<label>Meal end' + tin('data-m="end"', m.end) + '</label>' +
       '<button type="button" class="rm-meal" aria-label="Remove meal">×</button></div>';
+  }
+  function siteHtml(c) {
+    return '<div class="site"><label>On site' + tin('data-f="on_set"', c.on_set) + '</label>' +
+      '<label>Off site' + tin('data-f="wheels_up"', c.wheels_up) + '</label>' +
+      '<button type="button" class="rm-site" aria-label="Remove site time">×</button></div>';
+  }
+  function setSite(row, c) {
+    var box = q(row, '.sitebox'); box.innerHTML = '';
+    if (c && (c.on_set || c.wheels_up)) box.appendChild(el(siteHtml(c)));
+    q(row, '.addsite').hidden = !!q(row, '.site');
   }
   function addCrew(c, focus) {
     c = c || {}; var id = ++seq;
     if (c.stop === undefined && c.wrap !== undefined) c.stop = c.wrap; // drafts from the old form
-    var moreOpen = c.on_set || c.wheels_up || c.leave_shop || c.return_shop || c.role || c.hours_override != null && c.hours_override !== '' || c.edit_hours != null && c.edit_hours !== '' || c.note;
-    var row = el('<div class="crew-row" data-id="' + id + '">' +
+    var moreOpen = c.role || c.hours_override != null && c.hours_override !== '' || c.edit_hours != null && c.edit_hours !== '' || c.note;
+    var row = el('<div class="crew-row" data-id="' + id + '" data-leave="' + esc(c.leave_shop) + '" data-return="' + esc(c.return_shop) + '">' +
       '<div class="head"><label>Name<input data-f="name" list="dl-people" autocomplete="off" autocapitalize="words" value="' + esc(c.name) + '" placeholder="Crew member"></label>' +
       '<button type="button" class="rm" aria-label="Remove this person">×</button></div>' +
       '<div class="row2">' + timeInput('start', 'Start', c.start) + timeInput('stop', 'Stop', c.stop) + '</div>' +
       '<div class="tot"><span>Hours <span class="muted small" data-detail></span></span><b data-total>–</b></div><div class="warn" data-warn></div>' +
-      '<div class="meals stack"></div><button type="button" class="btn addmeal">+ Add meal break</button>' +
-      '<details' + (moreOpen ? ' open' : '') + '><summary>On site time, role, edit/DIT, more</summary><div class="stack">' +
-      '<p class="small muted">These are for the record. They don\'t change hours.</p>' +
-      '<div class="row2">' + timeInput('on_set', 'On site / set', c.on_set) + timeInput('wheels_up', 'Off site', c.wheels_up) + '</div>' +
-      '<div class="row2">' + timeInput('leave_shop', 'Leave shop', c.leave_shop) + timeInput('return_shop', 'Return to shop', c.return_shop) + '</div>' +
+      '<div class="meals stack"></div><div class="sitebox"></div>' +
+      '<div class="addbtns"><button type="button" class="btn addmeal">+ Add meal break</button><button type="button" class="btn addsite">+ Add site time</button></div>' +
+      '<details' + (moreOpen ? ' open' : '') + '><summary>More: role, edit/DIT, hours override, note</summary><div class="stack">' +
       '<div class="row2"><label>Role<input data-f="role" list="dl-roles" autocomplete="off" value="' + esc(c.role) + '" placeholder="e.g. A1, Camera"></label>' +
       '<label>Edit / DIT hrs<input data-f="edit_hours" inputmode="decimal" value="' + esc(c.edit_hours) + '" placeholder="0"></label></div>' +
       '<label>Hours, if not using start/stop<input data-f="hours_override" inputmode="decimal" value="' + esc(c.hours_override) + '" placeholder="Leave empty to use start/stop"></label>' +
@@ -45,6 +75,7 @@
     var meals = q(row, '.meals');
     (c.meals || []).forEach(function (m) { if (m && (m.start || m.end)) meals.appendChild(el(mealHtml(m))); });
     syncMealBtn(row);
+    setSite(row, c);
     crewList.appendChild(row);
     updateCrew(row);
     if (focus) q(row, '[data-f=name]').focus();
@@ -55,9 +86,14 @@
     var c = { meals: [] };
     qa(row, '[data-f]').forEach(function (i) {
       var f = i.getAttribute('data-f'), v = i.value.trim();
-      c[f] = i.type === 'time' ? (H.norm(v) || '') : v;
-      if (i.type === 'time' && v && !H.norm(v)) c._bad = (c._bad || []).concat(f);
+      var isTime = i.type === 'time' || i.classList.contains('tfield');
+      c[f] = isTime ? (H.norm(v) || '') : v;
+      if (isTime && badTime(i)) c._bad = (c._bad || []).concat(f);
     });
+    if (!q(row, '.site')) { c.on_set = ''; c.wheels_up = ''; }
+    // old entries: keep any saved leave-shop / return-to-shop values untouched (no longer shown)
+    if (row.getAttribute('data-leave')) c.leave_shop = row.getAttribute('data-leave');
+    if (row.getAttribute('data-return')) c.return_shop = row.getAttribute('data-return');
     qa(row, '.meal').forEach(function (m) { c.meals.push({ start: H.norm(q(m, '[data-m=start]').value) || '', end: H.norm(q(m, '[data-m=end]').value) || '' }); });
     return c;
   }
@@ -83,22 +119,26 @@
   crewList.addEventListener('click', function (ev) {
     var row = ev.target.closest('.crew-row'); if (!row) return;
     if (ev.target.closest('.rm')) {
-      if (qa(crewList, '.crew-row').length === 1) { qa(row, 'input').forEach(function (i) { i.value = ''; }); q(row, '.meals').innerHTML = ''; updateCrew(row); }
+      if (qa(crewList, '.crew-row').length === 1) { qa(row, 'input').forEach(function (i) { i.value = ''; }); q(row, '.meals').innerHTML = ''; setSite(row, null); syncMealBtn(row); updateCrew(row); }
       else { row.remove(); updateTotals(); }
       saveDraft();
     } else if (ev.target.closest('.addmeal')) {
       var m = el(mealHtml({})); q(row, '.meals').appendChild(m); syncMealBtn(row); q(m, 'input').focus(); updateCrew(row);
+    } else if (ev.target.closest('.addsite')) {
+      q(row, '.sitebox').appendChild(el(siteHtml({}))); q(row, '.addsite').hidden = true; q(row, '.site input').focus(); updateCrew(row);
+    } else if (ev.target.closest('.rm-site')) {
+      setSite(row, null); updateCrew(row); saveDraft();
     } else if (ev.target.closest('.rm-meal')) {
       ev.target.closest('.meal').remove(); syncMealBtn(row); updateCrew(row); saveDraft();
     }
   });
   function timesOf(row) { var c = readCrew(row), t = { meals: c.meals }; TIMES.forEach(function (f) { t[f] = c[f]; }); return t; }
   function applyTimes(row, t) {
-    TIMES.forEach(function (f) { q(row, '[data-f=' + f + ']').value = t[f] || ''; });
+    setVal(q(row, '[data-f=start]'), t.start); setVal(q(row, '[data-f=stop]'), t.stop);
+    setSite(row, t);
     var meals = q(row, '.meals'); meals.innerHTML = '';
     t.meals.forEach(function (m) { meals.appendChild(el(mealHtml(m))); });
     syncMealBtn(row);
-    if (t.leave_shop || t.on_set || t.wheels_up || t.return_shop) q(row, 'details').open = true;
     updateCrew(row);
   }
   document.getElementById('add-crew').addEventListener('click', function () {
@@ -205,7 +245,10 @@
     var data = collect();
     var job = form.elements.job, date = form.elements.date;
     var firstNameless = qa(crewList, '.crew-row').filter(function (r) { var c = readCrew(r); return !c.name && TIMES.some(function (f) { return c[f]; }); })[0];
-    var problem = !job.value.trim() ? [job, 'Enter the job / project name.'] : !date.value ? [date, 'Pick a date.']
+    var badTimes = qa(crewList, 'input[type=time], input.tfield').filter(badTime);
+    badTimes.forEach(function (i) { i.classList.add('bad'); var d = i.closest('details'); if (d) d.open = true; });
+    var problem = badTimes.length ? [badTimes[0], 'A time is incomplete or not understood (highlighted in red). Enter a full time like 7:30 AM, 1930 or 7:30p, or clear it.']
+      : !job.value.trim() ? [job, 'Enter the job / project name.'] : !date.value ? [date, 'Pick a date.']
       : firstNameless ? [q(firstNameless, '[data-f=name]'), 'A crew row has times but no name. Add the name (or remove the row).']
       : !data.crew.length ? [q(crewList, '[data-f=name]'), 'Add at least one crew member name.'] : null;
     if (problem) { ev.preventDefault(); alert(problem[1]); problem[0].focus(); return; }

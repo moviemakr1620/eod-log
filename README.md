@@ -16,7 +16,8 @@ Built for film shoots, AV installs and live events. Mobile first: big tap target
 
 - **+ New EOD** (floating button on phones): job / project, date, job type (Film shoot, AV install, Live event, Edit / DIT, Other).
 - **Crew & hours, per person.** Each person gets their own **Start** and **Stop**, and that's what makes the hours. Meal breaks are off by default: tap **+ Add meal break** for anyone who took one.
-  A fold-out holds the optional extras: **On site / set** and **Off site** times (shown as a secondary on-site hours figure), Leave shop, Return to shop, role, Edit/DIT hours, a note, and "hours, if not using start/stop" for someone who just knows their total.
+  Site time works the same way: **+ Add site time** reveals **On site** and **Off site** for that person (shown as a secondary on-site hours figure; it never changes the hours). A **More** fold-out holds role, Edit/DIT hours, a note, and "hours, if not using start/stop" for someone who just knows their total.
+  On phones and tablets the time fields use the native time picker. On desktop they are plain text fields: type `7`, `730`, `7:30p` or `19:30` (or pick from the 15-minute list) and it tidies to e.g. `7:30 PM` when you leave the field. A half-typed or unreadable time is outlined in red and the EOD will not save until it is fixed, so nothing is silently dropped.
   Hours are worked out live as you type. **Add crew** starts the new person with the first person's times, and **Copy times to everyone** syncs them.
 - **The rest of the old email** sits in fold-away sections so the quick path stays short: client, location, crew chief, time zone; expenses and receipts; vehicle, miles and tolls; # media taken and used; equipment requested by the client and equipment taken, provided and used; issues and damage; notes.
 - **Expenses**: one line per receipt with amount, category, who paid, and **Company card** or **Personal (reimburse)**. Each line takes photos (camera or library) or PDFs. Big phone photos are shrunk in the browser to about 2000 px JPEG before upload, so uploads are fast and the NAS stays small.
@@ -33,7 +34,7 @@ Built for film shoots, AV installs and live events. Mobile first: big tap target
 
 - **Hours = Stop − Start − any meal breaks entered.** No meal entered = nothing deducted.
 - Stop earlier than Start counts as past midnight (6pm to 2am = 8 h).
-- On site / Off site, Leave shop and Return to shop are for the record only and **never change hours**. When On site and Off site are both filled in, the entry also shows **on-site hours**.
+- On site / Off site are for the record only and **never change hours**. When On site and Off site are both filled in, the entry also shows **on-site hours**.
 - If "hours, if not using times" is filled in, it wins.
 - Edit/DIT hours are tracked separately and shown next to the hours, not added to them.
 

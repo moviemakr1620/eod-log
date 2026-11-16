@@ -21,7 +21,7 @@ test('overnight: stop before start', () => {
 test('old "wrap" field still works', () => { assert.equal(H.compute({ start: '09:00', wrap: '17:00' }).paidMin, 480); });
 test('override wins', () => { assert.equal(H.compute({ start: '09:00', stop: '17:00', hours_override: '10,5' }).paidMin, 630); });
 test('time formats from different browsers', () => {
-  const cases = { '07:30': '07:30', '7:30': '07:30', '07:30:00': '07:30', '07:30:00.000': '07:30', '7:30 PM': '19:30', '7:30pm': '19:30', '12:15 AM': '00:15', '12:00pm': '12:00', '730': '07:30', '1930': '19:30', '7pm': '19:00', '': null, 'abc': null, '25:00': null, '7': null };
+  const cases = { '07:30': '07:30', '7:30': '07:30', '07:30:00': '07:30', '07:30:00.000': '07:30', '7:30 PM': '19:30', '7:30pm': '19:30', '12:15 AM': '00:15', '12:00pm': '12:00', '730': '07:30', '1930': '19:30', '7pm': '19:00', '': null, 'abc': null, '25:00': null, '7': '07:00', '19': '19:00', '7:30p': '19:30', '7a': '07:00' };
   for (const [k, v] of Object.entries(cases)) assert.equal(H.norm(k), v, k);
   assert.equal(H.compute({ start: '07:30:00', stop: '18:00:00.000' }).paidMin, 630);
 });

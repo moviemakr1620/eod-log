@@ -96,9 +96,14 @@ details.sect>summary{min-height:32px}details.sect[open]>summary{margin-bottom:12
 .crew-row .tot{display:flex;justify-content:space-between;align-items:center;font-size:.9rem;background:var(--card);border-radius:10px;padding:8px 10px;border:1px dashed var(--line)}
 .crew-row .tot b{font-size:1.1rem}
 .crew-row .warn{font-size:.82rem}
-.meal{display:grid;grid-template-columns:1fr 1fr 44px;gap:8px;align-items:end}
+.meal{display:grid;grid-template-columns:1fr 1fr 40px;gap:8px;align-items:end}
 .meal .rm-meal{height:48px;border:1.5px solid var(--line);border-radius:10px;background:var(--card);color:var(--muted);font-size:1.2rem;cursor:pointer}
-.addmeal{align-self:flex-start;min-height:40px;padding:6px 12px;font-size:.9rem}
+.addmeal,.addsite{min-height:40px;padding:6px 12px;font-size:.9rem}
+.addbtns{display:flex;flex-wrap:wrap;gap:8px}
+.site{display:grid;grid-template-columns:1fr 1fr 40px;gap:8px;align-items:end}
+.site .rm-site{height:48px;border:1.5px solid var(--line);border-radius:10px;background:var(--card);color:var(--muted);font-size:1.2rem;cursor:pointer}
+.meal>*,.site>*{min-width:0}
+.meal input,.site input{width:100%;min-width:0;padding-left:10px;padding-right:8px}
 .crew-row details>summary{font-size:.9rem;color:var(--muted);min-height:40px}
 .crew-row details[open]>summary{margin-bottom:10px}
 .exp-row{border:1.5px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px;background:var(--bg)}
@@ -119,4 +124,5 @@ details.sect>summary{min-height:32px}details.sect[open]>summary{margin-bottom:12
 .tag{display:inline-block;font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em;padding:2px 7px;border-radius:999px;background:var(--line);color:var(--ink)}
 .tag-sent{background:#d1fae5;color:#065f46}.tag-skipped{background:#e5e7eb;color:#374151}.tag-failed{background:#fee2e2;color:#991b1b}.tag-test{background:#dbeafe;color:#1e40af}.tag-sending{background:#fef3c7;color:#92400e}
 .crew-row .tot{order:0}
+input.bad{border-color:var(--danger)!important;outline:3px solid color-mix(in srgb,var(--danger) 30%,transparent)}
 [hidden]{display:none!important}

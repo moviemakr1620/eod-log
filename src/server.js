@@ -113,7 +113,7 @@ app.get('/new', (req, res) => {
   const src = req.query.from && store.get(Number(req.query.from));
   if (src) {
     e = { ...src, id: undefined, date: appToday(), expenses: [], receipts: [], notes: null, issues: null, media_taken: null, media_used: null, miles: null, tolls: null,
-      crew: src.crew.map((c) => ({ name: c.name, role: c.role, leave_shop: c.leave_shop, on_set: c.on_set, start: c.start, stop: c.stop, wheels_up: c.wheels_up, return_shop: c.return_shop, meals: c.meals })) };
+      crew: src.crew.map((c) => ({ name: c.name, role: c.role, on_set: c.on_set, start: c.start, stop: c.stop, wheels_up: c.wheels_up, meals: c.meals })) };
   }
   send(res, views.form(req, { e, sugg: store.suggestions(), isNew: true }));
 });
@@ -238,9 +238,9 @@ function exportEntries(req) {
   return store.search({ ...f, limit: 100000, offset: 0 }).entries.reverse();
 }
 app.get('/export/hours.csv', (req, res) => {
-  const rows = [['date', 'job', 'job_type', 'client', 'location', 'time_zone', 'crew_chief', 'name', 'role', 'start', 'stop', 'meals', 'on_site', 'off_site', 'leave_shop', 'return_shop', 'hours', 'on_site_hours', 'meal_hours', 'hours_typed_in', 'edit_dit_hours', 'entry_url']];
+  const rows = [['date', 'job', 'job_type', 'client', 'location', 'time_zone', 'crew_chief', 'name', 'role', 'start', 'stop', 'meals', 'on_site', 'off_site', 'hours', 'on_site_hours', 'meal_hours', 'hours_typed_in', 'edit_dit_hours', 'entry_url']];
   exportEntries(req).forEach((e) => e.crew.forEach((c) => rows.push([e.date, e.job, e.job_type, e.client, e.location, e.tz, e.crew_chief, c.name, c.role, c.start, c.stop,
-    (c.meals || []).map((m) => `${m.start || '?'}-${m.end || '?'}`).join(' '), c.on_set, c.wheels_up, c.leave_shop, c.return_shop, H.dec(c.paid_min), H.dec(c.onsite_min), H.dec(c.meal_min), c.hours_override, c.edit_hours, `${cfg.PUBLIC_URL}/e/${e.id}`])));
+    (c.meals || []).map((m) => `${m.start || '?'}-${m.end || '?'}`).join(' '), c.on_set, c.wheels_up, H.dec(c.paid_min), H.dec(c.onsite_min), H.dec(c.meal_min), c.hours_override, c.edit_hours, `${cfg.PUBLIC_URL}/e/${e.id}`])));
   res.type('text/csv').attachment('eod-hours.csv').send(csv(rows));
 });
 app.get('/export/expenses.csv', (req, res) => {

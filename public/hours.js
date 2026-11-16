@@ -15,7 +15,6 @@
     var m = /^(\d{1,2})(?::?(\d{2}))?(?::\d{2}(?:\.\d+)?)?(am|pm|a|p)?$/.exec(s);
     if (!m) return null;
     var h = +m[1], mi = m[2] ? +m[2] : 0, ap = m[3];
-    if (!m[2] && !ap && m[1].length < 3) return null; // a bare "7" is too ambiguous
     if (ap) { if (h < 1 || h > 12) return null; if (ap[0] === 'p' && h < 12) h += 12; if (ap[0] === 'a' && h === 12) h = 0; }
     if (h > 23 || mi > 59) return null;
     return (h < 10 ? '0' : '') + h + ':' + (mi < 10 ? '0' : '') + mi;

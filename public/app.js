@@ -18,3 +18,8 @@ if (/[?&]saved=1/.test(location.search)) {
   function sync() { document.querySelectorAll('[data-show]').forEach(function (el) { el.hidden = el.getAttribute('data-show').split(' ').indexOf(f.value) < 0; }); }
   f.addEventListener('change', sync); sync();
 })();
+// any form: never submit a half-typed native date/time (the browser reports it as empty)
+document.addEventListener('submit', function (ev) {
+  var bad = Array.prototype.filter.call(ev.target.querySelectorAll('input'), function (i) { return i.validity && i.validity.badInput; });
+  if (bad.length) { ev.preventDefault(); ev.stopImmediatePropagation(); bad.forEach(function (i) { i.classList.add('bad'); }); alert('A date or time is only partly filled in. Finish it or clear it.'); bad[0].focus(); }
+}, true);
