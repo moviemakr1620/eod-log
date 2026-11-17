@@ -2,30 +2,35 @@ const cfg = require('./config');
 const H = require('../public/hours.js');
 const { html, raw, prettyDate, rangeLabel, money, addDays, TIMEZONES, tzShort, tzLabel, JOB_TYPES, EXPENSE_CATS, WDL } = require('./util');
 
-const V = '20'; // static asset cache-buster
+const V = '21'; // static asset cache-buster
 const icon = {
   plus: raw('<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" fill="none"/></svg>'),
   left: raw('<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'),
   right: raw('<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M9 5l7 7-7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'),
+  sun: raw('<svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.3 5.3l1.9 1.9M16.8 16.8l1.9 1.9M18.7 5.3l-1.9 1.9M7.2 16.8l-1.9 1.9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'),
+  moon: raw('<svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.2A8.5 8.5 0 119.8 3.5a7 7 0 0010.7 10.7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>'),
   clip: raw('<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M21 11l-8.5 8.5a5 5 0 01-7-7L14 4a3.5 3.5 0 015 5l-8.5 8.5a2 2 0 01-3-3L15 7" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>'),
   pin: raw('<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 22s7-6.2 7-12a7 7 0 10-14 0c0 5.8 7 12 7 12z" stroke="currentColor" stroke-width="2" fill="none"/><circle cx="12" cy="10" r="2.5" fill="currentColor"/></svg>'),
 };
+/** Light/dark toggle. Shows the icon of the mode you will switch TO (CSS picks sun or moon from data-theme). Wired up in app.js. */
+const themeBtn = (cls = '') => html`<button type="button" class="themebtn ${cls}" data-theme-toggle aria-label="Switch between light and dark mode" title="Light / dark mode">${icon.moon}${icon.sun}</button>`;
 const typeClass = (t) => ({ 'Film shoot': 't-film', 'AV install': 't-install', 'Live event': 't-live', 'Edit / DIT': 't-edit' }[t] || 't-other');
 const hrs = (min) => (min || min === 0 ? H.dec(min) + ' h' : '–');
 
-function layout(req, { title, body, active, scripts = [], fab = true, bare = false }) {
+function layout(req, { title, body, active, scripts = [], fab = true, bare = false, ownBar = false }) {
   const nav = (href, label, key) => html`<a href="${href}" class="${active === key ? 'on' : ''}"${active === key ? raw(' aria-current="page"') : ''}>${label}</a>`;
   return html`<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>${title ? title + ' · ' : ''}${cfg.APP_NAME}</title>
-<meta name="theme-color" content="#111827"><meta name="robots" content="noindex,nofollow">
+<meta name="color-scheme" content="light dark"><meta name="theme-color" content="#111827"><script src="/theme.js?v=${V}"></script><meta name="robots" content="noindex,nofollow">
 <link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="${cfg.APP_NAME}">
 <link rel="stylesheet" href="/app.css?v=${V}"></head><body class="${bare ? 'bare' : ''}">
 ${bare ? '' : html`<header class="top"><a class="brand" href="/">${cfg.APP_NAME}</a>
 <nav class="tabs">${nav('/', 'Week', 'week')}${nav('/list', 'List', 'list')}${nav('/settings', 'Settings', 'settings')}</nav>
-<a class="btn primary desk-only" href="/new">${icon.plus} New EOD</a></header>`}
+<a class="btn primary desk-only" href="/new">${icon.plus} New EOD</a>${themeBtn()}</header>`}
+${bare && !ownBar ? themeBtn('floating') : ''}
 <main class="wrap">${body}</main>
 ${fab && !bare ? html`<a class="fab" href="/new" aria-label="New end of day">${icon.plus}<span>New EOD</span></a>` : ''}
 <script src="/app.js?v=${V}" defer></script>${scripts.map((s) => html`<script src="${s}?v=${V}" defer></script>`)}
@@ -277,14 +282,14 @@ function summaryPage(req, { s, sch, title, emailHtml, isAdmin, smtpOk, back }) {
   const backHref = back || (isAdmin ? (sch ? `/settings/n/${sch.id}` : '/settings') : '/');
   const backLabel = backHref === '/settings' ? 'Settings' : backHref.startsWith('/settings/n/') ? 'Notification' : 'Back';
   const nav = (dir) => `/summary?${sch ? `n=${sch.id}&` : ''}from=${addDays(s.from, dir * days)}&to=${addDays(s.to, dir * days)}${back ? '&back=' + encodeURIComponent(back) : ''}`;
-  const body = html`<div class="previewbar"><a class="btn backbtn" href="${backHref}" data-back>${icon.left} ${backLabel}</a><span class="previewtag">Email preview</span></div>
+  const body = html`<div class="previewbar"><a class="btn backbtn" href="${backHref}" data-back>${icon.left} ${backLabel}</a><span class="previewtag">Email preview</span>${themeBtn()}</div>
 <div class="weeknav"><a class="iconbtn" href="${nav(-1)}" aria-label="Previous period">${icon.left}</a>
 <div class="weeklabel"><h1>${title}</h1><span class="muted small">${s.label}${s.entries.length ? '' : ' · no EODs: a scheduled send would be skipped'}</span></div>
 <a class="iconbtn" href="${nav(1)}" aria-label="Next period">${icon.right}</a></div>
 ${isAdmin && smtpOk && sch ? html`<form method="post" action="/settings/n/${sch.id}/send" class="row2 card"><input type="hidden" name="from" value="${s.from}"><input type="hidden" name="to_date" value="${s.to}"><input type="email" name="to" placeholder="Test address (empty = recipients)" aria-label="Send to"><button class="btn primary" type="submit">Send test</button></form>` : ''}
 <div class="emailprev">${raw(emailHtml)}</div>
 <p class="center"><a class="btn big" href="${backHref}">${icon.left} Back to ${backLabel === 'Back' ? 'the app' : backLabel}</a></p>`;
-  return layout(req, { title, active: 'settings', body, bare: true, fab: false });
+  return layout(req, { title, active: 'settings', body, bare: true, fab: false, ownBar: true });
 }
 
 function drivePage(req, { st, dev, msg, err, cal }) {

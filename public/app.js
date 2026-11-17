@@ -23,3 +23,19 @@ document.addEventListener('submit', function (ev) {
   var bad = Array.prototype.filter.call(ev.target.querySelectorAll('input'), function (i) { return i.validity && i.validity.badInput; });
   if (bad.length) { ev.preventDefault(); ev.stopImmediatePropagation(); bad.forEach(function (i) { i.classList.add('bad'); }); alert('A date or time is only partly filled in. Finish it or clear it.'); bad[0].focus(); }
 }, true);
+
+// light/dark button (theme itself is applied before first paint by /theme.js)
+(function () {
+  function label() {
+    var dark = window.eodTheme && window.eodTheme.current() === 'dark';
+    document.querySelectorAll('[data-theme-toggle]').forEach(function (b) {
+      b.setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode'); b.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+    });
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest && ev.target.closest('[data-theme-toggle]');
+    if (b && window.eodTheme) { window.eodTheme.toggle(); label(); }
+  });
+  new MutationObserver(label).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  label();
+})();

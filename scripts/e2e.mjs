@@ -27,9 +27,19 @@ const lastWeek = addDays(monday(today), -7);
 ok((await req('/healthz')).status === 200, 'healthz 200');
 let r = await req('/', { who: 'none' }); ok(r.status === 303 && /\/login/.test(r.headers.get('location')), 'anonymous / redirects to /login');
 r = await req('/r/1', { who: 'none' }); ok(r.status === 401 || r.status === 303, 'anonymous receipt blocked');
+{ // light/dark mode: button on every page (login included), theme applied from <head> before first paint, served without signing in
+  const lg = await text(await req('/login', { who: 'none' }));
+  ok(/<head>[\s\S]*<script src="\/theme\.js[^"]*"><\/script>[\s\S]*<\/head>/.test(lg) && lg.includes('name="color-scheme" content="light dark"') && lg.includes('name="theme-color"'), 'login: blocking theme script in <head>, color-scheme and theme-color meta');
+  ok(lg.includes('data-theme-toggle') && /aria-label="Switch/.test(lg), 'login page has the light/dark button with an accessible label');
+  const th = await req('/theme.js', { who: 'none' }); const tj = await text(th);
+  ok(th.status === 200 && /eod-theme/.test(tj) && /prefers-color-scheme: dark/.test(tj), 'theme.js is public and uses localStorage + prefers-color-scheme');
+  ok(!/script-src[^;]*unsafe-inline/.test(th.headers.get('content-security-policy') || ''), 'CSP still has no inline scripts');
+}
 r = await req('/login', { who: 'team', method: 'POST', body: new URLSearchParams({ name: 'Jason', password: 'nope' }) }); ok(r.status === 401, 'wrong password rejected');
 r = await req('/login', { who: 'team', method: 'POST', body: new URLSearchParams({ name: 'Jason', password: process.env.APP_PASSWORD }) });
 ok(r.status === 303 && jar.team, 'team login sets cookie');
+for (const pth of ['/', '/list', '/new']) { const pg = await text(await req(pth)); ok(pg.includes('data-theme-toggle') && pg.includes('/theme.js'), `${pth} has the light/dark button in the header`); }
+
 ok(/HttpOnly/.test(r.headers.get('set-cookie')) && /Max-Age=\d{6,}/.test(r.headers.get('set-cookie')), 'cookie is HttpOnly and long-lived');
 
 // new form

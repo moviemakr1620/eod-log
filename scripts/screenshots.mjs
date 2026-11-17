@@ -129,5 +129,42 @@ if (process.env.GMOCK) {
   await page.goto(BASE + '/settings', { waitUntil: 'networkidle0' });
   await shot('19-settings-with-calendar-full', true);
 }
+// ---- light / dark mode: the header button, remembered in localStorage, every kind of page
+{
+  const theme = () => page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+  const toggle = async () => { await page.$eval('[data-theme-toggle]', (b) => b.click()); await new Promise((r) => setTimeout(r, 150)); };
+  const W = WEEK ? '?week=' + WEEK : '';
+  await page.evaluate(() => localStorage.removeItem('eod-theme'));
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' }]);
+  await page.goto(BASE + '/' + W, { waitUntil: 'networkidle0' });
+  console.log('theme follows system (light):', await theme());
+  await shot('20-week-light');
+  await toggle(); console.log('after tap:', await theme(), '| saved:', await page.evaluate(() => localStorage.getItem('eod-theme')));
+  await shot('20-week-dark');
+  await page.goto(BASE + '/new', { waitUntil: 'networkidle0' });
+  console.log('remembered on the next page:', await theme());
+  await page.$eval('#add-crew', (b) => b.click()); await page.$eval('.crew-row .addmeal', (b) => b.click());
+  await shot('20-new-eod-dark'); await shot('20-new-eod-dark-full', true);
+  await toggle(); await shot('20-new-eod-light'); await shot('20-new-eod-light-full', true);
+  await toggle(); // dark again for the rest
+  for (const [name, url, full] of [['20-dark-list', '/list', false], ['20-dark-detail-full', '/e/2', true], ['20-dark-settings-full', '/settings', true], ['20-dark-notification-full', '/settings/n/1', true], ['20-dark-drive-full', '/settings/drive', true], ['20-dark-calendar-full', '/settings/calendar', true], ['20-dark-clear-all-full', '/settings/clear', true], ['20-dark-email-preview', '/summary?from=2026-11-09&to=2026-11-15', false]]) {
+    await page.goto(BASE + url, { waitUntil: 'networkidle0' }); await shot(name, full);
+  }
+  // system dark + nothing saved -> dark without touching anything; login page has its own button
+  await page.evaluate(() => localStorage.removeItem('eod-theme'));
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
+  await page.goto(BASE + '/' + W, { waitUntil: 'networkidle0' });
+  console.log('system dark, nothing saved ->', await theme());
+  const meta = await page.$eval('meta[name=theme-color]', (m) => m.content); console.log('theme-color meta in dark:', meta);
+  await page.evaluate(() => localStorage.removeItem('eod-theme'));
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' }]);
+  const ctx = browser.defaultBrowserContext();
+  const p2 = await browser.newPage(); await p2.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  await p2.goto(BASE + '/logout', { waitUntil: 'networkidle0' }).catch(() => {});
+  await p2.goto(BASE + '/login', { waitUntil: 'networkidle0' });
+  await p2.$eval('[data-theme-toggle]', (b) => b.click()); await new Promise((r) => setTimeout(r, 150));
+  await p2.screenshot({ path: `${OUT}/20-login-dark.png` }); console.log('saved', `${OUT}/20-login-dark.png`);
+  await p2.close();
+}
 console.log('JS errors:', errors.length ? errors : 'none');
 await browser.close();
