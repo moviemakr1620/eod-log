@@ -9,17 +9,17 @@ function build(from, to) {
   if (!to) to = addDays(from, 6); // (weekStart) form
   const entries = store.range(from, to);
   const people = {}, jobs = {};
-  const person = (n) => (people[n] = people[n] || { name: n, days: new Set(), paid: 0, edit: 0, owed: 0, companyCard: 0, miles: 0, entries: 0 });
-  let totalPaid = 0, totalEdit = 0, totalExp = 0, totalOwed = 0;
+  const person = (n) => (people[n] = people[n] || { name: n, days: new Set(), paid: 0, onset: 0, edit: 0, owed: 0, companyCard: 0, miles: 0, entries: 0 });
+  let totalPaid = 0, totalOnset = 0, totalEdit = 0, totalExp = 0, totalOwed = 0;
   const expenses = [];
   entries.forEach((e) => {
-    const j = (jobs[e.job] = jobs[e.job] || { job: e.job, type: e.job_type, client: e.client, dates: new Set(), paid: 0, edit: 0, crew: new Set(), expenses: 0, ids: [] });
+    const j = (jobs[e.job] = jobs[e.job] || { job: e.job, type: e.job_type, client: e.client, dates: new Set(), paid: 0, onset: 0, edit: 0, crew: new Set(), expenses: 0, ids: [] });
     j.dates.add(e.date); j.ids.push(e.id);
     e.crew.forEach((c) => {
       const p = person(c.name); p.days.add(e.date); p.entries++;
-      p.paid += c.paid_min || 0; p.edit += Math.round((c.edit_hours || 0) * 60);
-      j.paid += c.paid_min || 0; j.edit += Math.round((c.edit_hours || 0) * 60); j.crew.add(c.name);
-      totalPaid += c.paid_min || 0; totalEdit += Math.round((c.edit_hours || 0) * 60);
+      p.paid += c.paid_min || 0; p.onset += c.onsite_min || 0; p.edit += Math.round((c.edit_hours || 0) * 60);
+      j.paid += c.paid_min || 0; j.onset += c.onsite_min || 0; j.edit += Math.round((c.edit_hours || 0) * 60); j.crew.add(c.name);
+      totalPaid += c.paid_min || 0; totalOnset += c.onsite_min || 0; totalEdit += Math.round((c.edit_hours || 0) * 60);
     });
     if (e.vehicle_kind === 'personal' && e.miles && e.driver) person(e.driver).miles += e.miles;
     e.expenses.forEach((x) => {
@@ -34,7 +34,7 @@ function build(from, to) {
     from, to, label: from === to ? prettyDate(from, true) : rangeLabel(from, to), entries, expenses,
     people: list(people).map((p) => ({ ...p, days: p.days.size })).sort((a, b) => b.paid - a.paid || a.name.localeCompare(b.name)),
     jobs: list(jobs).map((j) => ({ ...j, dates: [...j.dates].sort(), crew: [...j.crew] })).sort((a, b) => a.dates[0].localeCompare(b.dates[0])),
-    totals: { entries: entries.length, paid: totalPaid, edit: totalEdit, expenses: totalExp, owed: totalOwed },
+    totals: { entries: entries.length, paid: totalPaid, onset: totalOnset, edit: totalEdit, expenses: totalExp, owed: totalOwed },
   };
 }
 
@@ -55,21 +55,21 @@ function emailHtml(s, title) {
 <h1 style="font-size:20px;margin:0 0 4px">${esc(cfg.APP_NAME)}: ${esc(title)}</h1>
 <div style="color:#6b7280;font-size:14px;margin-bottom:16px">${esc(s.label)}</div>
 <table role="presentation" cellspacing="4" cellpadding="0" style="width:100%;border-collapse:separate;table-layout:fixed"><tr>
-${stat('EODs', s.totals.entries)}${stat('Crew hours', H.dec(s.totals.paid) || '0')}${stat('Edit/DIT hrs', H.dec(s.totals.edit) || '0')}${stat('Expenses', money(s.totals.expenses))}${stat('To reimburse', money(s.totals.owed))}
+${stat('EODs', s.totals.entries)}${stat('Total hours', H.dec(s.totals.paid) || '0')}${stat('On set hrs', H.dec(s.totals.onset) || '0')}${stat('Edit/DIT hrs', H.dec(s.totals.edit) || '0')}${stat('Expenses', money(s.totals.expenses))}${stat('To reimburse', money(s.totals.owed))}
 </tr></table>`;
 
   if (!s.entries.length) return out + `<p style="font-size:14px">No EODs were logged in this period. (Scheduled emails are skipped when there's nothing to report.)</p></div>`;
 
-  out += `<h2 ${h2}>Hours by person</h2><table cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse"><tr><th ${th}>Name</th><th ${th}>Days</th><th ${th} align="right">Hours</th><th ${th} align="right">Edit/DIT</th><th ${th} align="right">Reimburse</th></tr>`;
+  out += `<h2 ${h2}>Hours by person</h2><table cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse"><tr><th ${th}>Name</th><th ${th}>Days</th><th ${th} align="right">Total hrs</th><th ${th} align="right">On set hrs</th><th ${th} align="right">Edit/DIT</th><th ${th} align="right">Reimburse</th></tr>`;
   s.people.forEach((p) => {
-    out += `<tr><td ${td}>${esc(p.name)}</td><td ${td}>${p.days || ''}</td><td ${tdr}>${H.dec(p.paid) || ''}</td><td ${tdr}>${p.edit ? H.dec(p.edit) : ''}</td><td ${tdr}>${p.owed ? '<b>' + money(p.owed) + '</b>' : ''}${p.miles ? `<div style="font-size:12px;color:#6b7280">${p.miles} personal mi</div>` : ''}</td></tr>`;
+    out += `<tr><td ${td}>${esc(p.name)}</td><td ${td}>${p.days || ''}</td><td ${tdr}>${H.dec(p.paid) || ''}</td><td ${tdr}>${p.onset ? H.dec(p.onset) : ''}</td><td ${tdr}>${p.edit ? H.dec(p.edit) : ''}</td><td ${tdr}>${p.owed ? '<b>' + money(p.owed) + '</b>' : ''}${p.miles ? `<div style="font-size:12px;color:#6b7280">${p.miles} personal mi</div>` : ''}</td></tr>`;
   });
   out += `</table>`;
 
-  out += `<h2 ${h2}>Jobs</h2><table cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse"><tr><th ${th}>Job</th><th ${th}>Dates</th><th ${th} align="right">Hours</th><th ${th} align="right">Expenses</th></tr>`;
+  out += `<h2 ${h2}>Jobs</h2><table cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse"><tr><th ${th}>Job</th><th ${th}>Dates</th><th ${th} align="right">Total hrs</th><th ${th} align="right">Expenses</th></tr>`;
   s.jobs.forEach((j) => {
     out += `<tr><td ${td}><b>${esc(j.job)}</b>${j.type ? ` <span style="color:#6b7280;font-size:12px">${esc(j.type)}</span>` : ''}${j.client ? `<div style="font-size:12px;color:#6b7280">${esc(j.client)}</div>` : ''}<div style="font-size:12px;color:#6b7280">Crew: ${esc(j.crew.join(', '))}</div></td>
-<td ${td}>${j.dates.map((d) => esc(prettyDate(d))).join('<br>')}</td><td ${tdr}>${H.dec(j.paid) || ''}${j.edit ? `<div style="font-size:12px;color:#6b7280">+${H.dec(j.edit)} edit</div>` : ''}</td><td ${tdr}>${j.expenses ? money(j.expenses) : ''}</td></tr>`;
+<td ${td}>${j.dates.map((d) => esc(prettyDate(d))).join('<br>')}</td><td ${tdr}>${H.dec(j.paid) || ''}${j.onset ? `<div style="font-size:12px;color:#6b7280">${H.dec(j.onset)} on set</div>` : ''}${j.edit ? `<div style="font-size:12px;color:#6b7280">+${H.dec(j.edit)} edit</div>` : ''}</td><td ${tdr}>${j.expenses ? money(j.expenses) : ''}</td></tr>`;
   });
   out += `</table>`;
 
@@ -80,8 +80,8 @@ ${stat('EODs', s.totals.entries)}${stat('Crew hours', H.dec(s.totals.paid) || '0
 <table cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse;margin-top:6px">`;
     e.crew.forEach((c) => {
       const times = [c.start || c.stop ? `${H.ampm(c.start) || '?'}–${H.ampm(c.stop) || '?'}` : '',
-        ...(c.meals || []).map((m) => `meal ${H.ampm(m.start)}–${H.ampm(m.end)}`), c.on_set && 'on site ' + H.ampm(c.on_set) + (c.wheels_up ? '–' + H.ampm(c.wheels_up) : '')].filter(Boolean).join(' · ');
-      out += `<tr><td style="padding:3px 0;font-size:13px">${esc(c.name)}${c.role ? ` <span style="color:#6b7280">(${esc(c.role)})</span>` : ''}<div style="font-size:12px;color:#6b7280">${esc(times)}${e.tz ? ' ' + esc(tzShort(e.tz)) : ''}</div></td><td style="padding:3px 0;font-size:13px;text-align:right;white-space:nowrap">${H.dec(c.paid_min)} h${c.edit_hours ? ` +${c.edit_hours} edit` : ''}</td></tr>`;
+        ...(c.meals || []).map((m) => `meal ${H.ampm(m.start)}–${H.ampm(m.end)}`), c.on_set && 'on set ' + H.ampm(c.on_set) + (c.wheels_up ? '–' + H.ampm(c.wheels_up) : '') + (c.onsite_min != null ? ` (${H.dec(c.onsite_min)} h)` : '')].filter(Boolean).join(' · ');
+      out += `<tr><td style="padding:3px 0;font-size:13px">${esc(c.name)}${c.role ? ` <span style="color:#6b7280">(${esc(c.role)})</span>` : ''}<div style="font-size:12px;color:#6b7280">${esc(times)}${e.tz ? ' ' + esc(tzShort(e.tz)) : ''}</div></td><td style="padding:3px 0;font-size:13px;text-align:right;white-space:nowrap">${H.dec(c.paid_min)} h total${c.onsite_min != null ? ` · ${H.dec(c.onsite_min)} h on set` : ''}${c.edit_hours ? ` +${c.edit_hours} edit` : ''}</td></tr>`;
     });
     out += `</table>`;
     if (e.issues) out += `<div style="font-size:13px;margin-top:6px;color:#b91c1c"><b>Issues:</b> ${esc(e.issues)}</div>`;
@@ -97,17 +97,17 @@ ${stat('EODs', s.totals.entries)}${stat('Crew hours', H.dec(s.totals.paid) || '0
     });
     out += `</table>`;
   }
-  out += `<p style="font-size:12px;color:#9ca3af;margin-top:24px">Hours = stop minus start, minus any meal breaks entered (or the hours a person typed in). Sent by ${esc(cfg.APP_NAME)} · <a href="${esc(base)}/?week=${s.from}" style="color:#9ca3af">open in the app</a></p></div>`;
+  out += `<p style="font-size:12px;color:#9ca3af;margin-top:24px">Total hours = stop minus start, minus any meal breaks (or the hours a person typed in). On set hours = on set start to end, minus meals inside that window. Sent by ${esc(cfg.APP_NAME)} · <a href="${esc(base)}/?week=${s.from}" style="color:#9ca3af">open in the app</a></p></div>`;
   return out;
 }
 
 function emailText(s, title) {
-  const lines = [`${cfg.APP_NAME} ${title || 'summary'}: ${s.label}`, '', `EODs: ${s.totals.entries} | Crew hours: ${H.dec(s.totals.paid) || 0} | Edit/DIT: ${H.dec(s.totals.edit) || 0} | Expenses: ${money(s.totals.expenses)} | To reimburse: ${money(s.totals.owed)}`, ''];
+  const lines = [`${cfg.APP_NAME} ${title || 'summary'}: ${s.label}`, '', `EODs: ${s.totals.entries} | Total hours: ${H.dec(s.totals.paid) || 0} | On set hours: ${H.dec(s.totals.onset) || 0} | Edit/DIT: ${H.dec(s.totals.edit) || 0} | Expenses: ${money(s.totals.expenses)} | To reimburse: ${money(s.totals.owed)}`, ''];
   if (!s.entries.length) return lines.concat('No EODs were logged in this period.').join('\n');
   lines.push('HOURS BY PERSON');
-  s.people.forEach((p) => lines.push(`- ${p.name}: ${H.dec(p.paid) || 0} h over ${p.days} day(s)${p.edit ? `, ${H.dec(p.edit)} edit` : ''}${p.owed ? `, reimburse ${money(p.owed)}` : ''}${p.miles ? `, ${p.miles} personal mi` : ''}`));
+  s.people.forEach((p) => lines.push(`- ${p.name}: ${H.dec(p.paid) || 0} h total${p.onset ? `, ${H.dec(p.onset)} h on set` : ''} over ${p.days} day(s)${p.edit ? `, ${H.dec(p.edit)} edit` : ''}${p.owed ? `, reimburse ${money(p.owed)}` : ''}${p.miles ? `, ${p.miles} personal mi` : ''}`));
   lines.push('', 'JOBS');
-  s.jobs.forEach((j) => lines.push(`- ${j.job}${j.type ? ' (' + j.type + ')' : ''}: ${H.dec(j.paid) || 0} h, ${j.dates.map((d) => prettyDate(d)).join(', ')}${j.expenses ? ', expenses ' + money(j.expenses) : ''}`));
+  s.jobs.forEach((j) => lines.push(`- ${j.job}${j.type ? ' (' + j.type + ')' : ''}: ${H.dec(j.paid) || 0} h total${j.onset ? `, ${H.dec(j.onset)} h on set` : ''}, ${j.dates.map((d) => prettyDate(d)).join(', ')}${j.expenses ? ', expenses ' + money(j.expenses) : ''}`));
   lines.push('', 'ENTRIES');
   s.entries.forEach((e) => lines.push(`- ${prettyDate(e.date)} ${e.job}: ${baseUrl()}/e/${e.id}`));
   return lines.join('\n');

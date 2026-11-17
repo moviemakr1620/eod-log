@@ -40,9 +40,10 @@ test.after(() => { mockServer.close(); fs.rmSync(tmp, { recursive: true, force: 
 
 test('names are tidy, safe and sortable', () => {
   const n = () => drive.naming;
-  assert.strictEqual(n().folderName({ date: '2026-11-13', job: 'Acme / Spring\npromo', job_type: 'Film shoot' }), '2026-11-13 Acme - Spring promo (Film shoot)');
+  assert.strictEqual(n().folderName({ date: '2026-11-13', job: 'Acme / Spring\npromo', job_type: 'Film shoot' }), 'Acme - Spring promo (Film shoot)');
+  assert.strictEqual(n().dayName('2026-11-13'), '2026-11-13'); assert.strictEqual(n().yearName('2026-11-13'), '2026');
   assert.strictEqual(n().pdfName({ date: '2026-11-13', job: 'Gala' }), 'EOD 2026-11-13 Gala.pdf');
-  assert.strictEqual(n().monthName('2026-03-02'), '2026-03 March');
+  assert.strictEqual(n().monthName('2026-03-02'), '03 March');
   assert.ok(n().folderName({ date: '2026-01-01', job: 'x'.repeat(400) }).length <= 120);
   const e = { date: '2026-11-13', job: 'Gala', expenses: [{ id: 1, description: 'Lunch', amount: 86.4, paid_by: 'personal' }, { id: 2, description: null, category: 'Fuel', amount: 63.65, paid_by: 'company' }],
     receipts: [{ stored: 'a.jpg', expense_id: 1, mime: 'image/jpeg' }, { stored: 'b.jpg', expense_id: 2, mime: 'image/jpeg' }, { stored: 'c.pdf', expense_id: 2, mime: 'application/pdf' }, { stored: 'd.png', expense_id: null, mime: 'image/png' }] };
@@ -75,11 +76,11 @@ test('device sign-in, upload, edit, move, retry, delete, sharing, disconnect', a
   await drive.runOnce();
   let s = await state();
   assert.deepStrictEqual(tree(s), [
-    'EOD Log', 'EOD Log/2026', 'EOD Log/2026/2026-11 November', 'EOD Log/2026/2026-11 November/2026-11-13 Villanova promo (Film shoot)',
-    'EOD Log/2026/2026-11 November/2026-11-13 Villanova promo (Film shoot)/2026-11-13 Villanova promo - Gas - $63.65 (Card) 1.jpg',
-    'EOD Log/2026/2026-11 November/2026-11-13 Villanova promo (Film shoot)/2026-11-13 Villanova promo - Gas - $63.65 (Card) 2.pdf',
-    'EOD Log/2026/2026-11 November/2026-11-13 Villanova promo (Film shoot)/2026-11-13 Villanova promo - Lunch - crew - $86.40 (Personal).jpg',
-    'EOD Log/2026/2026-11 November/2026-11-13 Villanova promo (Film shoot)/EOD 2026-11-13 Villanova promo.pdf',
+    'EOD Log', 'EOD Log/2026', 'EOD Log/2026/11 November', 'EOD Log/2026/11 November/2026-11-13', 'EOD Log/2026/11 November/2026-11-13/Villanova promo (Film shoot)',
+    'EOD Log/2026/11 November/2026-11-13/Villanova promo (Film shoot)/2026-11-13 Villanova promo - Gas - $63.65 (Card) 1.jpg',
+    'EOD Log/2026/11 November/2026-11-13/Villanova promo (Film shoot)/2026-11-13 Villanova promo - Gas - $63.65 (Card) 2.pdf',
+    'EOD Log/2026/11 November/2026-11-13/Villanova promo (Film shoot)/2026-11-13 Villanova promo - Lunch - crew - $86.40 (Personal).jpg',
+    'EOD Log/2026/11 November/2026-11-13/Villanova promo (Film shoot)/EOD 2026-11-13 Villanova promo.pdf',
   ]);
   assert.ok(s.calls.some((c) => c.endsWith('uploadType=resumable')) && s.calls.some((c) => c.endsWith('uploadType=multipart')), 'small files multipart, big file resumable');
   const big = s.files.find((f) => f.name.endsWith('2.pdf')); assert.strictEqual(big.size, 5.5 * 1024 * 1024);
@@ -96,7 +97,7 @@ test('device sign-in, upload, edit, move, retry, delete, sharing, disconnect', a
   s = await state();
   const live = tree(s).filter((x) => x.includes('Villanova'));
   assert.deepStrictEqual(live.map((x) => x.split('/').pop()), [
-    '2026-11-13 Villanova commencement (Film shoot)',
+    'Villanova commencement (Film shoot)',
     '2026-11-13 Villanova commencement - Gas - $70.00 (Card).pdf',
     '2026-11-13 Villanova commencement - Lunch - crew - $86.40 (Personal) 1.jpg',
     '2026-11-13 Villanova commencement - Lunch - crew - $86.40 (Personal) 2.jpg',
@@ -110,7 +111,7 @@ test('device sign-in, upload, edit, move, retry, delete, sharing, disconnect', a
   store.update(id, store.normalise(body({ job: 'Villanova commencement', date: '2026-12-02', expenses: exps })), [], []);
   drive.enqueue(id); await drive.runOnce();
   s = await state();
-  assert.ok(tree(s).includes('EOD Log/2026/2026-12 December/2026-12-02 Villanova commencement (Film shoot)'));
+  assert.ok(tree(s).includes('EOD Log/2026/12 December/2026-12-02/Villanova commencement (Film shoot)'));
 
   // a failing Drive call is retried with backoff, never lost
   await mock('/mock/fail?n=1&status=503&reason=backendError');
@@ -121,7 +122,7 @@ test('device sign-in, upload, edit, move, retry, delete, sharing, disconnect', a
   assert.strictEqual(drive.status().failing, 1);
   await sleep(80); await drive.runOnce();
   assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM drive_queue').get().n, 0, 'retried and done');
-  assert.ok(tree(await state()).some((x) => x.endsWith('2026-12-02 Retry job (Film shoot)')));
+  assert.ok(tree(await state()).some((x) => x.endsWith('2026-12-02/Retry job (Film shoot)')));
 
   // someone trashes the whole root folder in Drive -> a fresh tree is made on the next sync
   await mock('/mock/trash?id=' + drive.S.get('root_id'));
@@ -129,12 +130,12 @@ test('device sign-in, upload, edit, move, retry, delete, sharing, disconnect', a
   // root is only re-checked every 10 min; force it like the Test button does
   await drive.test(); await drive.runOnce();
   s = await state();
-  assert.ok(tree(s).includes('EOD Log/2026/2026-12 December/2026-12-02 Retry job (Film shoot)/EOD 2026-12-02 Retry job.pdf'), 'recreated after root was trashed');
+  assert.ok(tree(s).includes('EOD Log/2026/12 December/2026-12-02/Retry job (Film shoot)/EOD 2026-12-02 Retry job.pdf'), 'recreated after root was trashed');
 
   // delete in the app -> folder kept but renamed "(deleted) ..." (default)
   drive.onDelete(id); store.remove(id); await drive.runOnce();
   s = await state();
-  assert.ok(tree(s).some((x) => x.endsWith('/(deleted) 2026-12-02 Retry job (Film shoot)')));
+  assert.ok(tree(s).some((x) => x.endsWith('/(deleted) Retry job (Film shoot)')));
   // with "trash" chosen, the folder goes to the trash
   drive.S.set('on_delete', 'trash');
   const id2 = store.create(store.normalise(body({ job: 'Trash me', expenses: [] })), [], 'Jason');
@@ -164,5 +165,203 @@ test('service account + Shared Drive folder', async () => {
   assert.ok(drive.connected()); assert.strictEqual(drive.status().account, 'eod@proj.iam.gserviceaccount.com');
   const id = store.create(store.normalise(body({ job: 'SA job', expenses: [] })), [], 'Jason');
   drive.enqueue(id); await drive.runOnce();
-  assert.ok(tree(await state()).includes('KPI Shared EODs/2026/2026-11 November/2026-11-13 SA job (Film shoot)/EOD 2026-11-13 SA job.pdf'));
+  assert.ok(tree(await state()).includes('KPI Shared EODs/2026/11 November/2026-11-13/SA job (Film shoot)/EOD 2026-11-13 SA job.pdf'));
+});
+
+
+// ---------- layout: year > month > day > job, existing folders are moved, not duplicated
+const CAL = 'https://www.googleapis.com/auth/calendar';
+const reconnect = async () => { // desktop-app sign-in: "paste the address" flow
+  const link = drive.startLink();
+  const q = new URL(link.url).searchParams;
+  assert.strictEqual(q.get('redirect_uri'), 'http://127.0.0.1:9004'); assert.strictEqual(q.get('code_challenge_method'), 'S256');
+  assert.ok(q.get('scope').includes(CAL) && q.get('scope').includes('drive.file'));
+  await mock('/mock/code-reset');
+  await drive.finishLink(`http://127.0.0.1:9004/?state=${q.get('state')}&code=MOCKCODE&scope=x`);
+};
+const freshOauth = () => {
+  drive.resetToken(); drive.S.set('mode', 'oauth');
+  drive.S.set('client_id', 'test-client.apps.googleusercontent.com'); drive.S.set('client_secret', 'test-secret'); drive.S.set('client_type', 'desktop');
+  drive.S.del('root_id'); drive.resetMapping(); db.exec('DELETE FROM entries');
+};
+
+test('paste-the-address sign-in: state is checked, code is exchanged once, scopes are remembered', async () => {
+  await mock('/mock/reset'); freshOauth();
+  assert.strictEqual(drive.clientType(), 'desktop');
+  const link = drive.startLink(); const st = new URL(link.url).searchParams.get('state');
+  await assert.rejects(drive.finishLink('http://127.0.0.1:9004/?state=WRONG&code=MOCKCODE'), /older sign-in/);
+  await assert.rejects(drive.finishLink('http://127.0.0.1:9004/?state=' + st + '&error=access_denied'), /denied/);
+  await assert.rejects(drive.finishLink('nothing useful'), /No code found/);
+  await drive.finishLink('http://127.0.0.1:9004/?state=' + st + '&code=MOCKCODE&scope=a');
+  assert.ok(drive.connected()); assert.strictEqual(drive.status().account, 'jason@kpi.example'); assert.ok(drive.calendarScopeOk());
+  assert.strictEqual(drive.status().link, null);
+  // Google's device flow refuses Calendar: that is why Calendar needs this flow
+  const r = await fetch(BASE + '/device/code', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: 'test-client.apps.googleusercontent.com', scope: 'https://www.googleapis.com/auth/drive.file ' + CAL }) });
+  assert.strictEqual(r.status, 400);
+  // a device-flow sign-in only gets drive.file -> Calendar would need a reconnect
+  drive.S.set('client_type', 'tv'); await drive.startDevice(); await mock('/mock/approve');
+  for (let i = 0; i < 30 && drive.deviceState().state === 'waiting'; i++) await sleep(200);
+  assert.strictEqual(drive.deviceState().state, 'done'); assert.strictEqual(drive.calendarScopeOk(), false);
+});
+
+test('old layout (year > "2026-10 October" > "2026-10-05 Job (Type)") moves to year > month > day > job, in the same Drive folders', async () => {
+  await mock('/mock/reset'); freshOauth(); await reconnect();
+  const e = store.create(store.normalise(body({ job: 'Legacy job', date: '2026-10-05', expenses: [] })), [], 'Jason');
+  drive.enqueue(e); await drive.runOnce();
+  const before = await state();
+  const jobFolder = before.files.find((f) => f.name === 'Legacy job (Film shoot)');
+  const monthF = before.files.find((f) => f.name === '10 October');
+  assert.ok(jobFolder && monthF);
+  // make Drive + the bookkeeping look like the previous version made them
+  const oldName = '2026-10-05 Legacy job (Film shoot)';
+  await mock(`/mock/rename?id=${monthF.id}&name=${encodeURIComponent('2026-10 October')}`);
+  await mock(`/mock/rename?id=${jobFolder.id}&name=${encodeURIComponent(oldName)}`);
+  await mock(`/mock/move?id=${jobFolder.id}&to=${monthF.id}`);
+  db.prepare("UPDATE drive_folders SET name=NULL WHERE key LIKE 'm:%'").run();
+  db.prepare("DELETE FROM drive_folders WHERE key LIKE 'd:%'").run();
+  db.prepare('UPDATE drive_entries SET folder_name=?, parent_id=? WHERE entry_id=?').run(oldName, monthF.id, e);
+  drive.S.del('layout'); drive.migrateLayout();
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM drive_queue WHERE entry_id=?').get(e).n, 1, 'migration queues entries that are already in Drive');
+  await drive.runOnce();
+  const s = await state();
+  assert.ok(tree(s).includes('EOD Log/2026/10 October/2026-10-05/Legacy job (Film shoot)/EOD 2026-10-05 Legacy job.pdf'), tree(s).join('\n'));
+  assert.strictEqual(s.files.find((f) => f.id === jobFolder.id).name, 'Legacy job (Film shoot)', 'same folder, renamed and moved');
+  assert.strictEqual(s.files.find((f) => f.id === monthF.id).name, '10 October', 'month folder renamed in place');
+  assert.strictEqual(s.files.filter((f) => /October/.test(f.name)).length, 1, 'no second month folder');
+  assert.strictEqual(s.files.filter((f) => /Legacy job/.test(f.name) && !f.name.startsWith('EOD')).length, 1, 'no duplicate job folder');
+  // two EODs for the same job + day get their own folders
+  const a = store.create(store.normalise(body({ job: 'Twin job', expenses: [] })), [], 'Jason');
+  const b = store.create(store.normalise(body({ job: 'Twin job', expenses: [] })), [], 'Jason');
+  drive.enqueue(a); drive.enqueue(b); await drive.runOnce();
+  const t = tree(await state());
+  assert.ok(t.some((x) => x.endsWith('2026-11-13/Twin job (Film shoot)/EOD 2026-11-13 Twin job.pdf')) && t.some((x) => x.endsWith('2026-11-13/Twin job (Film shoot) #2/EOD 2026-11-13 Twin job.pdf')), t.join('\n'));
+});
+
+// ---------- Google Calendar
+const gcal = () => require('../src/gcal');
+
+test('calendar event times: earliest start to latest stop, past midnight, on set fallback, all day', () => {
+  const g = gcal();
+  const t = g.eventTimes({ date: '2026-11-13', tz: 'America/New_York', crew: [{ start: '08:00', stop: '16:00' }, { start: '07:00', stop: '17:30' }] });
+  assert.deepStrictEqual([t.allDay, t.start.dateTime, t.end.dateTime, t.start.timeZone], [false, '2026-11-13T07:00:00', '2026-11-13T17:30:00', 'America/New_York']);
+  const n = g.eventTimes({ date: '2026-11-13', crew: [{ start: '18:00', stop: '02:00' }] });
+  assert.deepStrictEqual([n.start.dateTime, n.end.dateTime], ['2026-11-13T18:00:00', '2026-11-14T02:00:00']);
+  assert.strictEqual(g.eventTimes({ date: '2026-12-31', crew: [{ on_set: '22:00', wheels_up: '01:00' }] }).end.dateTime, '2027-01-01T01:00:00');
+  assert.deepStrictEqual(g.eventTimes({ date: '2026-11-13', crew: [{ name: 'x' }] }), { allDay: true, start: { date: '2026-11-13' }, end: { date: '2026-11-14' } });
+  assert.strictEqual(g.eventTimes({ date: '2026-11-13', crew: [{ start: '09:00' }] }).end.dateTime, '2026-11-13T10:00:00');
+  assert.strictEqual(g.eventTitle({ job: 'Gala', job_type: 'Live event' }), 'Gala (Live event) – EOD');
+});
+
+test('calendar (OAuth): own calendar is created, one event per EOD with the PDF attached, edits patch it, deletes follow the Drive setting', async () => {
+  await mock('/mock/reset'); freshOauth(); await reconnect();
+  const g = gcal(); drive.S.set('on_delete', 'mark');
+  // not switched on: nothing is created
+  const e0 = store.create(store.normalise(body({ job: 'Before calendar', expenses: [] })), [], 'Jason');
+  drive.enqueue(e0); await drive.runOnce();
+  assert.strictEqual((await state()).cals.length, 0);
+  g.S.set('cal_on', '1'); g.S.set('cal_name', 'KPI EODs');
+  assert.ok(g.usable());
+  const id = store.create(store.normalise(body({ job: 'Gala', expenses: [{ key: '1', description: 'Lunch', category: 'Meals', amount: '86.4', paid_by: 'personal', person: 'Jason' }] })), [], 'Jason');
+  db.prepare("UPDATE entries SET tz='America/New_York', vehicle='Sprinter', miles=120, notes='Strike took long' WHERE id=?").run(id);
+  g.enqueueAll(); drive.enqueue(id); await drive.runOnce();
+  let s = await state();
+  assert.strictEqual(s.cals.length, 1); assert.strictEqual(s.cals[0].summary, 'KPI EODs'); assert.strictEqual(s.cals[0].timeZone, 'America/New_York');
+  const ev = s.events.find((x) => x.summary === 'Gala (Film shoot) – EOD');
+  assert.ok(ev, 'event for Gala'); assert.strictEqual(s.events.length, 2, 'one event per EOD (Gala + the earlier one)');
+  assert.deepStrictEqual([ev.start.dateTime, ev.end.dateTime], ['2026-11-13T07:00:00', '2026-11-13T17:00:00']);
+  const pdf = s.files.find((f) => f.name === 'EOD 2026-11-13 Gala.pdf');
+  assert.strictEqual(ev.attachments.length, 1); assert.strictEqual(ev.attachments[0].fileId, pdf.id);
+  assert.strictEqual(ev.attachments[0].fileUrl, `https://drive.google.com/file/d/${pdf.id}/view`); assert.strictEqual(ev.attachments[0].mimeType, 'application/pdf'); assert.strictEqual(ev.attachments[0].title, 'EOD 2026-11-13 Gala.pdf');
+  assert.match(ev.description, /Total hours: 17\.5 h · On set hours: 9 h/); assert.match(ev.description, /Jason \(DP\): 7:00am–5:00pm, meal 12:00pm–12:30pm/); assert.match(ev.description, /on set 9 h, total 8 h/);
+  assert.match(ev.description, /EXPENSES: \$86\.40 \(\$86\.40 to reimburse\)/); assert.match(ev.description, /Sprinter/); assert.match(ev.description, /120 mi/); assert.match(ev.description, /Strike took long/);
+  assert.ok(s.calls.some((c) => /^POST \/calendar\/v3\/calendars$/.test(c)), 'calendars.insert');
+  assert.strictEqual(g.status().synced, 2); assert.strictEqual(g.status().pending, 0);
+
+  // edit: same event is patched (not duplicated), still with the (same) PDF; the PDF was re-uploaded BEFORE the calendar call
+  store.update(id, store.normalise(body({ job: 'Gala night', expenses: [] })), [], []);
+  drive.enqueue(id); await drive.runOnce();
+  s = await state();
+  assert.strictEqual(s.events.length, 2); const ev2 = s.events.find((x) => x.id === ev.id);
+  assert.strictEqual(ev2.summary, 'Gala night (Film shoot) – EOD'); assert.strictEqual(s.cals.length, 1, 'calendar reused');
+  const calls = s.calls; // order in the log: the PDF is replaced in Drive first, then the event is patched
+  assert.ok(calls.lastIndexOf('PATCH /calendar/v3/calendars/' + encodeURIComponent(s.cals[0].id) + '/events/' + ev.id) > calls.lastIndexOf('PATCH /upload/drive/v3/files/' + pdf.id + '?uploadType=multipart'), calls.slice(-8).join('\n'));
+  assert.ok(s.calls.some((c) => c.includes('/events/') && c.startsWith('PATCH')), 'events.patch');
+
+  // someone deletes the event in Google Calendar -> next edit makes a fresh one
+  await mock(`/mock/event-delete?id=${ev.id}`);
+  store.update(id, store.normalise(body({ job: 'Gala night', expenses: [] })), [], []); drive.enqueue(id); await drive.runOnce();
+  s = await state(); assert.strictEqual(s.events.filter((x) => x.status !== 'cancelled' && x.summary.startsWith('Gala night')).length, 1);
+
+  // calendar renamed in Settings -> the calendar is renamed, not duplicated
+  g.S.set('cal_name', 'KPI Crew EODs'); g.settingsChanged(); store.update(id, store.normalise(body({ job: 'Gala night', expenses: [] })), [], []); drive.enqueue(id); await drive.runOnce();
+  s = await state(); assert.strictEqual(s.cals.length, 1); assert.strictEqual(s.cals[0].summary, 'KPI Crew EODs');
+
+  // transient Calendar failure -> retried with backoff, Drive files are NOT re-uploaded
+  await mock('/mock/fail?n=1&status=503&reason=backendError');
+  store.update(id, store.normalise(body({ job: 'Gala retry', expenses: [] })), [], []); drive.enqueue(id);
+  await drive.runOnce(); // the Drive step eats the injected failure here...
+  await sleep(80); await drive.runOnce(); await sleep(80); await drive.runOnce();
+  s = await state(); assert.ok(s.events.some((x) => x.summary === 'Gala retry (Film shoot) – EOD'), 'event updated after retry');
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM cal_queue').get().n, 0); assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM drive_queue').get().n, 0);
+
+  // delete in the app: default = prefix "(deleted)"; with "trash" the event is removed
+  drive.onDelete(id); store.remove(id); await drive.runOnce();
+  s = await state(); assert.ok(s.events.some((x) => x.summary === '(deleted) Gala retry (Film shoot) – EOD'), 'marked deleted');
+  drive.S.set('on_delete', 'trash');
+  const id2 = store.create(store.normalise(body({ job: 'Temp', expenses: [] })), [], 'Jason'); drive.enqueue(id2); await drive.runOnce();
+  assert.ok((await state()).events.some((x) => x.summary.startsWith('Temp ')));
+  drive.onDelete(id2); store.remove(id2); await drive.runOnce();
+  assert.ok(!(await state()).events.some((x) => x.summary.startsWith('Temp ')), 'event removed');
+  drive.S.set('on_delete', 'mark');
+
+  // the Test button: finds the calendar, adds + removes a test event
+  const before = (await state()).events.length; const r = await g.test(); assert.strictEqual(r.name, 'KPI Crew EODs'); assert.strictEqual((await state()).events.length, before);
+
+  // switching calendars (paste mode) puts events on the other calendar
+  const other = (await mock('/mock/calendar?name=Other')).id;
+  g.S.set('cal_mode', 'paste'); g.S.set('cal_paste_id', other); g.settingsChanged({ calendarSwitched: true }); await drive.runOnce();
+  s = await state(); assert.ok(s.events.filter((x) => x.calendarId === other).length >= 1, 'events created on the pasted calendar');
+  g.S.set('cal_mode', 'auto');
+});
+
+test('calendar: no Calendar scope -> "reconnect" state, nothing is called; Calendar API off -> clear error', async () => {
+  await mock('/mock/reset'); freshOauth(); await mock('/mock/grant?scope=' + encodeURIComponent('https://www.googleapis.com/auth/drive.file')); await reconnect();
+  const g = gcal(); g.S.set('cal_on', '1');
+  assert.strictEqual(drive.calendarScopeOk(), false); assert.strictEqual(g.needsReconnect(), true); assert.strictEqual(g.usable(), false); assert.strictEqual(g.status().needsReconnect, true);
+  const id = store.create(store.normalise(body({ job: 'NoScope', expenses: [] })), [], 'Jason'); drive.enqueue(id); await drive.runOnce();
+  let s = await state(); assert.strictEqual(s.cals.length, 0); assert.ok(!s.calls.some((c) => c.includes('/calendar/')), 'no calendar calls without the scope');
+  assert.ok(s.files.some((f) => f.name === 'EOD 2026-11-13 NoScope.pdf'), 'Drive still works');
+  await assert.rejects(g.test(), /Reconnect to enable Calendar/);
+  // reconnect with the scope -> catches up
+  await mock('/mock/grant?scope=' + encodeURIComponent('https://www.googleapis.com/auth/drive.file ' + CAL)); await reconnect();
+  assert.strictEqual(g.usable(), true); g.enqueueAll(); await drive.runOnce();
+  assert.strictEqual((await state()).events.length, 1);
+  // Calendar API not enabled in the Google Cloud project
+  await mock('/mock/calapi-off');
+  store.update(id, store.normalise(body({ job: 'NoScope', expenses: [] })), [], []); drive.enqueue(id); await drive.runOnce();
+  const row = db.prepare('SELECT * FROM cal_queue WHERE entry_id=?').get(id);
+  assert.ok(row && /Google Calendar API is not turned on/.test(row.last_error), row && row.last_error);
+  await mock('/mock/calapi-off?off=0');
+});
+
+test('calendar (service account): needs a calendar shared with it; works once shared', async () => {
+  await mock('/mock/reset');
+  const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const shared = (await mock('/mock/folder?name=KPI%20Shared%20EODs')).id;
+  drive.S.set('mode', 'sa'); drive.resetToken(); drive.resetMapping(); db.exec('DELETE FROM entries');
+  drive.S.set('sa_json', JSON.stringify({ type: 'service_account', client_email: 'eod@proj.iam.gserviceaccount.com', private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }) }));
+  drive.S.set('shared_folder_id', shared);
+  const g = gcal(); g.S.set('cal_on', '1'); g.S.set('cal_paste_id', '');
+  assert.strictEqual(g.calMode(), 'paste'); assert.ok(drive.calendarScopeOk());
+  const id = store.create(store.normalise(body({ job: 'SA cal job', expenses: [] })), [], 'Jason'); drive.enqueue(id); await drive.runOnce();
+  let row = db.prepare('SELECT * FROM cal_queue WHERE entry_id=?').get(id);
+  assert.ok(row && /Paste a calendar ID/.test(row.last_error), row && row.last_error);
+  g.S.set('cal_paste_id', 'nobody@group.calendar.google.com'); g.enqueueAll(); await drive.runOnce(); // not shared with the service account
+  row = db.prepare('SELECT * FROM cal_queue WHERE entry_id=?').get(id);
+  assert.ok(row && /not shared with the service account/.test(row.last_error), row && row.last_error);
+  const cal = (await mock('/mock/calendar?name=EOD%20Log&sa=1')).id;
+  g.S.set('cal_paste_id', cal); db.prepare('UPDATE cal_queue SET attempts=0,next_at=0').run(); g.enqueueAll(); await drive.runOnce();
+  const s = await state(); const ev = s.events.find((x) => x.calendarId === cal);
+  assert.ok(ev && ev.summary === 'SA cal job (Film shoot) – EOD' && ev.attachments[0].fileUrl.includes('/file/d/'), 'event on the shared calendar with the PDF');
+  assert.strictEqual(s.cals.filter((c) => !c.sa).length, 0, 'service account mode never creates calendars');
 });

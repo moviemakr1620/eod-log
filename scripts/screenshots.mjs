@@ -40,9 +40,8 @@ await page.select('select[name=job_type]', 'Film shoot');
 const setTime = (sel, v) => page.$eval(sel, (el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); }, v);
 await setTime('.crew-row [data-f=start]', '07:30');
 await setTime('.crew-row [data-f=stop]', '18:00');
-await page.$eval('.crew-row .addsite', (b) => b.click());
-await setTime('.crew-row .site [data-f=on_set]', '07:00');
-await setTime('.crew-row .site [data-f=wheels_up]', '18:30');
+await setTime('.crew-row [data-f=on_set]', '07:00');
+await setTime('.crew-row [data-f=wheels_up]', '18:30');
 await page.$eval('#add-crew', (b) => b.click());
 await page.type('.crew-row:nth-child(2) [data-f=name]', 'Maria Lopez');
 await page.$eval('#add-crew', (b) => b.click());
@@ -61,6 +60,10 @@ const fileInput = await page.$('.exp-row input[type=file]');
 await fileInput.uploadFile(process.env.RECEIPT || 'test/fixtures/receipt.jpg');
 await new Promise((r) => setTimeout(r, 500));
 console.log('form overflow px', await overflow());
+await page.$eval('.crew-row:nth-child(1) .addmeal', (b) => b.click());
+await setTime('.crew-row:nth-child(1) .meal [data-m=start]', '12:30'); await setTime('.crew-row:nth-child(1) .meal [data-m=end]', '13:00');
+await page.$eval('.crew-row:nth-child(1)', (el) => el.scrollIntoView({ block: 'start' })); await new Promise((r) => setTimeout(r, 200));
+await (await page.$('#crew-list .crew-row')).screenshot({ path: `${OUT}/15-crew-row-times.png` }); console.log('saved', `${OUT}/15-crew-row-times.png`);
 await page.evaluate(() => window.scrollTo(0, 0));
 await shot('04-new-eod-filled'); await shot('04-new-eod-filled-full', true);
 await Promise.all([page.waitForNavigation(), page.$eval('#save-btn', (b) => b.click())]);
@@ -99,13 +102,32 @@ if (process.env.GMOCK) {
   await Promise.all([page.waitForNavigation(), page.click('#drive-form button[type=submit]')]);
   await Promise.all([page.waitForNavigation(), page.$eval('form[action="/settings/drive/connect"] button', (b) => b.click())]);
   await page.evaluate(() => window.scrollTo(0, 0));
-  await shot('12-drive-code');
-  await fetch(process.env.GMOCK + '/mock/approve', { method: 'POST' });
-  await page.waitForNavigation({ timeout: 15000 });
+  const authHref = await page.$eval('#connect a.btn', (a) => a.getAttribute('href'));
+  await shot('12-drive-connect-paste');
+  await fetch(process.env.GMOCK + '/mock/code-reset', { method: 'POST' });
+  await page.type('textarea[name=pasted]', `http://127.0.0.1:9004/?state=${new URL(authHref).searchParams.get('state')}&code=MOCKCODE&scope=email%20https://www.googleapis.com/auth/drive.file%20https://www.googleapis.com/auth/calendar`);
+  await Promise.all([page.waitForNavigation(), page.click('#connect form button[type=submit]')]);
   await Promise.all([page.waitForNavigation(), page.$eval('form[action="/settings/drive/sync-all"] button', (b) => b.click())]);
   await new Promise((r) => setTimeout(r, 4000));
   await page.goto(BASE + '/settings/drive', { waitUntil: 'networkidle0' });
   await shot('13-drive-connected'); await shot('13-drive-connected-full', true);
+}
+// Google Calendar settings + the new Drive tree (needs GMOCK)
+if (process.env.GMOCK) {
+  await page.goto(BASE + '/settings/drive', { waitUntil: 'networkidle0' });
+  await page.$eval('pre.tree', (el) => el.closest('.card').scrollIntoView({ block: 'center' })); await new Promise((r) => setTimeout(r, 200));
+  await shot('16-drive-tree');
+  await page.goto(BASE + '/settings/calendar', { waitUntil: 'networkidle0' });
+  await shot('17-calendar-settings'); await shot('17-calendar-settings-full', true);
+  console.log('calendar page overflow px', await overflow());
+  await page.$eval('input[name=cal_on]', (i) => i.click());
+  await Promise.all([page.waitForNavigation(), page.$eval('form[action="/settings/calendar/save"] button[type=submit]', (b) => b.click())]);
+  await Promise.all([page.waitForNavigation(), page.$eval('form[action="/settings/calendar/sync-all"] button', (b) => b.click())]);
+  await new Promise((r) => setTimeout(r, 5000));
+  await page.goto(BASE + '/settings/calendar', { waitUntil: 'networkidle0' });
+  await shot('18-calendar-on'); await shot('18-calendar-on-full', true);
+  await page.goto(BASE + '/settings', { waitUntil: 'networkidle0' });
+  await shot('19-settings-with-calendar-full', true);
 }
 console.log('JS errors:', errors.length ? errors : 'none');
 await browser.close();

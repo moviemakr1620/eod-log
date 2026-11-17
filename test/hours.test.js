@@ -30,3 +30,22 @@ test('half-entered warns', () => {
   assert.equal(H.compute({ start: '09:00', stop: '17:00', meals: [{ start: '12:00' }] }).warnings.length, 1);
 });
 test('format', () => { assert.equal(H.fmt(630), '10:30'); assert.equal(H.dec(630), '10.5'); assert.equal(H.ampm('13:05'), '1:05pm'); });
+
+// ---- on set hours: on set start -> on set end, minus meals that fall inside; total hours stay Stop - Start - meals
+test('on set hours take out a meal that falls inside the on set window; total hours are separate', () => {
+  const r = H.compute({ start: '07:00', stop: '17:00', on_set: '08:00', wheels_up: '16:00', meals: [{ start: '12:00', end: '12:30' }] });
+  assert.equal(r.paidMin, 570); assert.equal(r.onSiteMin, 450);
+});
+test('on set hours: meal outside the window is not taken out, a partly inside meal only counts the inside part', () => {
+  assert.equal(H.compute({ start: '07:00', stop: '17:00', on_set: '08:00', wheels_up: '11:00', meals: [{ start: '12:00', end: '12:30' }] }).onSiteMin, 180);
+  assert.equal(H.compute({ start: '07:00', stop: '17:00', on_set: '08:00', wheels_up: '12:15', meals: [{ start: '12:00', end: '12:30' }] }).onSiteMin, 240);
+  assert.equal(H.compute({ start: '07:00', stop: '17:00', on_set: '08:00', wheels_up: '16:00', meals: [{ start: '07:30', end: '08:30' }] }).onSiteMin, 450);
+});
+test('on set hours: no meals, overnight, and meals past midnight', () => {
+  assert.equal(H.compute({ on_set: '07:30', wheels_up: '18:00' }).onSiteMin, 630);
+  assert.equal(H.compute({ on_set: '20:00', wheels_up: '03:00' }).onSiteMin, 420);
+  assert.equal(H.compute({ start: '19:00', stop: '04:00', on_set: '20:00', wheels_up: '03:00', meals: [{ start: '23:30', end: '00:30' }] }).onSiteMin, 360);
+  assert.equal(H.compute({ on_set: '08:00' }).onSiteMin, null);
+  assert.equal(H.compute({ on_set: '08:00' }).warnings[0], 'Add an on set end time');
+  assert.equal(H.compute({ wheels_up: '08:00' }).warnings[0], 'Add an on set start time');
+});

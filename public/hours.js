@@ -1,7 +1,7 @@
 /* Shared hours maths (browser + Node).
- * Rule: hours = Stop - Start - meal breaks. Stop earlier than Start = past midnight.
- * Other times (leave shop, on site, off site, return) are for the record only and never change hours.
- * On-site hours (On site -> Off site) are shown as a secondary figure. */
+ * TOTAL hours = Stop - Start - meal breaks. Stop earlier than Start = past midnight.
+ * ON-SET hours = On set start -> On set end, minus any part of a meal break that falls inside that window.
+ * They are two separate figures; neither changes the other. Old leave/return-shop times are kept but never used. */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.EODHours = factory();
@@ -29,6 +29,14 @@
   function span(a, b) { var x = toMin(a), y = toMin(b); if (x === null || y === null) return null; var d = y - x; if (d < 0) d += 1440; return d; }
   function num(v) { if (v === null || v === undefined || String(v).trim() === '') return null; var n = Number(String(v).trim().replace(',', '.')); return isFinite(n) ? n : null; }
 
+  /** Minutes of one meal break (a -> b) that fall inside the window [ws, ws+len] (clock times; handles past midnight). */
+  function overlap(ws, len, ma, mb) {
+    var a = toMin(ma), d = span(ma, mb);
+    if (a === null || d === null) return 0;
+    var off = ((a - ws) % 1440 + 1440) % 1440, best = 0;
+    [off, off - 1440].forEach(function (s) { best += Math.max(0, Math.min(s + d, len) - Math.max(s, 0)); });
+    return best;
+  }
   function compute(c) {
     c = c || {};
     var stop = c.stop !== undefined ? c.stop : c.wrap; // "wrap" = old name
@@ -44,7 +52,12 @@
     var shift = span(c.start, stop);
     var totalMin = shift === null ? null : Math.max(0, shift - mealMin);
     if (shift === null && (toMin(c.start) !== null) !== (toMin(stop) !== null)) warnings.push(toMin(c.start) === null ? 'Add a start time' : 'Add a stop time');
-    var onSiteMin = span(c.on_set, c.wheels_up);
+    var onSetRaw = span(c.on_set, c.wheels_up), onSiteMin = null, onSetMealMin = 0;
+    if (onSetRaw !== null) {
+      var ws = toMin(c.on_set);
+      meals.forEach(function (ml) { if (ml) onSetMealMin += overlap(ws, onSetRaw, ml.start, ml.end); });
+      onSiteMin = Math.max(0, onSetRaw - Math.min(onSetMealMin, onSetRaw));
+    } else if ((toMin(c.on_set) !== null) !== (toMin(c.wheels_up) !== null)) warnings.push(toMin(c.on_set) === null ? 'Add an on set start time' : 'Add an on set end time');
     var override = num(c.hours_override);
     var paidMin = override !== null ? Math.round(override * 60) : totalMin;
     if (totalMin !== null && totalMin > 18 * 60) warnings.push('More than 18 hours, check the times');

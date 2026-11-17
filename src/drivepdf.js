@@ -49,10 +49,10 @@ function entryPdf(e) {
     doc.moveDown(0.5);
     kv([['Client', e.client], ['Location', e.location], ['Crew chief', e.crew_chief], ['Time zone', e.tz ? tzShort(e.tz) : ''], ['Logged by', e.created_by]]);
 
-    h2(`Crew & hours (${H.dec(e.paid_min) || 0} h total)`);
-    table([['Name', 0.19], ['Role', 0.12], ['Start', 0.09], ['Stop', 0.09], ['Meals', 0.17], ['On site', 0.19], ['Hours', 0.15, 'right']],
-      e.crew.map((c) => [c.name, c.role || '', t(c.start), t(c.stop), (c.meals || []).map((m) => `${t(m.start)}-${t(m.end)}`).join(', '),
-        c.on_set || c.wheels_up ? `${t(c.on_set)}-${t(c.wheels_up)}${c.onsite_min != null ? ` (${H.dec(c.onsite_min)} h)` : ''}` : '',
+    h2(`Crew & hours (${H.dec(e.paid_min) || 0} h total${e.onsite_min ? `, ${H.dec(e.onsite_min)} h on set` : ''})`);
+    table([['Name', 0.17], ['Role', 0.1], ['Start-Stop', 0.17], ['Meals', 0.14], ['On set', 0.17], ['On set hrs', 0.12, 'right'], ['Total hrs', 0.13, 'right']],
+      e.crew.map((c) => [c.name, c.role || '', c.start || c.stop ? `${t(c.start) || '?'}-${t(c.stop) || '?'}` : '', (c.meals || []).map((m) => `${t(m.start)}-${t(m.end)}`).join(', '),
+        c.on_set || c.wheels_up ? `${t(c.on_set) || '?'}-${t(c.wheels_up) || '?'}` : '', c.onsite_min != null ? H.dec(c.onsite_min) : '',
         `${c.paid_min != null ? H.dec(c.paid_min) : '-'}${c.hours_override != null ? '*' : ''}${c.edit_hours ? ` +${c.edit_hours} edit` : ''}`]));
     const notes = e.crew.filter((c) => c.note).map((c) => [c.name, c.note]);
     if (e.crew.some((c) => c.hours_override != null)) { doc.moveDown(0.2); doc.font('Helvetica').fontSize(8.5).fillColor('#6b7280').text('* hours typed in instead of start/stop', L); }

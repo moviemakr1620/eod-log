@@ -116,8 +116,21 @@ CREATE TABLE IF NOT EXISTS drive_queue (
   entry_id INTEGER PRIMARY KEY,
   attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0, last_error TEXT, queued_at TEXT
 );
-CREATE TABLE IF NOT EXISTS drive_folders (key TEXT PRIMARY KEY, file_id TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS drive_folders (key TEXT PRIMARY KEY, file_id TEXT NOT NULL, name TEXT);
+-- Google Calendar: one event per EOD (event id kept so edits patch the same event); its own retry queue
+CREATE TABLE IF NOT EXISTS cal_entries (
+  id INTEGER PRIMARY KEY,
+  entry_id INTEGER UNIQUE,               -- NULL once the EOD was deleted (row then waits for its event to be removed/marked)
+  calendar_id TEXT, event_id TEXT, summary TEXT, html_link TEXT,
+  synced_at TEXT, pending_delete INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0, last_error TEXT
+);
+CREATE TABLE IF NOT EXISTS cal_queue (
+  entry_id INTEGER PRIMARY KEY,
+  attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0, last_error TEXT, queued_at TEXT
+);
 `);
+try { db.exec('ALTER TABLE drive_folders ADD COLUMN name TEXT'); } catch { /* already there */ }
 
 // ---- migrations (PRAGMA user_version)
 const cols = (t) => db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
@@ -164,6 +177,21 @@ if (ver < 3) {
     }
     db.pragma('user_version = 3');
   })();
+}
+
+// v4: on-set hours now subtract meal breaks that fall inside the on-set window. Recompute the stored figures for old entries.
+if (ver < 4) {
+  db.transaction(() => {
+    const H = require('../public/hours.js');
+    const upd = db.prepare('UPDATE crew SET total_min=?, onsite_min=?, meal_min=?, paid_min=? WHERE id=?');
+    db.prepare('SELECT * FROM crew').all().forEach((r) => {
+      let meals = []; try { meals = JSON.parse(r.meals || '[]') || []; } catch { /* keep [] */ }
+      const x = H.compute({ ...r, meals });
+      upd.run(x.totalMin, x.onSiteMin, x.mealMin, x.paidMin, r.id);
+    });
+    db.pragma('user_version = 4');
+  })();
+  ver = 4;
 }
 
 module.exports = { db, getSetting, setSetting };

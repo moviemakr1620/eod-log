@@ -146,6 +146,7 @@ function hydrate(entries) {
   entries.forEach((e) => {
     e.crew = crew[e.id] || []; e.expenses = exp[e.id] || []; e.receipts = rec[e.id] || [];
     e.paid_min = e.crew.reduce((s, c) => s + (c.paid_min || 0), 0);
+    e.onsite_min = e.crew.reduce((s, c) => s + (c.onsite_min || 0), 0); // total on-set hours (meals inside the window already taken out)
     e.expense_total = e.expenses.reduce((s, x) => s + (x.amount || 0), 0);
   });
   return entries;

@@ -2,7 +2,7 @@ const cfg = require('./config');
 const H = require('../public/hours.js');
 const { html, raw, prettyDate, rangeLabel, money, addDays, TIMEZONES, tzShort, tzLabel, JOB_TYPES, EXPENSE_CATS, WDL } = require('./util');
 
-const V = '18'; // static asset cache-buster
+const V = '20'; // static asset cache-buster
 const icon = {
   plus: raw('<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" fill="none"/></svg>'),
   left: raw('<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'),
@@ -61,7 +61,7 @@ function entryCard(e, { showDate } = {}) {
 <div class="entry-head"><h3>${e.job}</h3>${e.job_type ? html`<span class="badge ${typeClass(e.job_type)}">${e.job_type}</span>` : ''}</div>
 <div class="meta">${showDate ? html`<span>${prettyDate(e.date, true)}</span>` : ''}${e.client ? html`<span>${e.client}</span>` : ''}${e.location ? html`<span>${icon.pin} ${e.location}</span>` : ''}</div>
 <div class="chips">${crewChips(e)}</div>
-<div class="entry-foot"><span><b>${hrs(e.paid_min)}</b> crew</span>
+<div class="entry-foot"><span><b>${hrs(e.paid_min)}</b> total</span>${e.onsite_min ? html`<span><b>${hrs(e.onsite_min)}</b> on set</span>` : ''}
 ${e.expense_total ? html`<span>${money(e.expense_total)}${owed ? html` <em class="owed">(${money(owed)} to reimburse)</em>` : ''}</span>` : ''}
 ${e.receipts.length ? html`<span class="muted">${icon.clip} ${e.receipts.length}</span>` : ''}</div>
 ${e.notes ? html`<p class="snip">${e.notes.length > 140 ? e.notes.slice(0, 140) + '…' : e.notes}</p>` : ''}</a>`;
@@ -80,11 +80,11 @@ function week(req, { start, s, today }) {
 ${today >= start && today <= end ? html`<span class="muted small">This week</span>` : html`<a class="small" href="/">Back to this week</a>`}</div></div>
 <a class="iconbtn" href="/?week=${addDays(start, 7)}" aria-label="Next week">${icon.right}</a></div>
 <div class="stats">
-<div><b>${s.totals.entries}</b><span>EODs</span></div><div><b>${H.dec(s.totals.paid) || 0}</b><span>crew hrs</span></div>
+<div><b>${s.totals.entries}</b><span>EODs</span></div><div><b>${H.dec(s.totals.paid) || 0}</b><span>total hrs</span></div>
 <div><b>${money(s.totals.expenses) || '$0.00'}</b><span>expenses</span></div><div><b>${money(s.totals.owed) || '$0.00'}</b><span>to reimburse</span></div></div>
 ${s.people.length ? html`<details class="card people"><summary>Hours by person <span class="muted">(${s.people.length})</span></summary>
-<table class="tbl"><thead><tr><th>Name</th><th>Days</th><th class="r">Hours</th><th class="r">Edit</th><th class="r">Reimb.</th></tr></thead><tbody>
-${s.people.map((p) => html`<tr><td><a href="/list?person=${encodeURIComponent(p.name)}">${p.name}</a></td><td>${p.days || ''}</td><td class="r">${H.dec(p.paid)}</td><td class="r">${p.edit ? H.dec(p.edit) : ''}</td><td class="r">${p.owed ? money(p.owed) : ''}</td></tr>`)}
+<table class="tbl"><thead><tr><th>Name</th><th>Days</th><th class="r">Total</th><th class="r">On set</th><th class="r">Edit</th><th class="r">Reimb.</th></tr></thead><tbody>
+${s.people.map((p) => html`<tr><td><a href="/list?person=${encodeURIComponent(p.name)}">${p.name}</a></td><td>${p.days || ''}</td><td class="r">${H.dec(p.paid)}</td><td class="r">${p.onset ? H.dec(p.onset) : ''}</td><td class="r">${p.edit ? H.dec(p.edit) : ''}</td><td class="r">${p.owed ? money(p.owed) : ''}</td></tr>`)}
 </tbody></table><p class="small"><a href="/summary?week=${start}">Weekly email preview</a> · <a href="/export/hours.csv?from=${start}&to=${end}">Hours CSV</a> · <a href="/export/expenses.csv?from=${start}&to=${end}">Expenses CSV</a></p></details>` : ''}
 ${days.length ? days.map((d) => html`<section class="day"><h2>${prettyDate(d)}</h2>${byDay[d].map((e) => entryCard(e))}</section>`)
     : html`<div class="empty card"><p>No EODs this week yet.</p><a class="btn primary big" href="/new">${icon.plus} New EOD</a></div>`}`;
@@ -119,15 +119,15 @@ function detail(req, { e, isAdmin }) {
   const general = e.receipts.filter((r) => !r.expense_id || !e.expenses.find((x) => x.id === r.expense_id));
   const vk = { company: 'Company vehicle', personal: 'Personal vehicle', rental: 'Rental' }[e.vehicle_kind];
   const body = html`<div class="detail-head"><a class="back" href="/?week=${require('./util').weekStart(e.date)}">${icon.left} Week</a></div>
-${req.query && req.query.saved ? html`<p class="alert info" role="status">Saved. ${e.crew.length} crew, ${hrs(e.paid_min)} total.</p>` : ''}
+${req.query && req.query.saved ? html`<p class="alert info" role="status">Saved. ${e.crew.length} crew, ${hrs(e.paid_min)} total${e.onsite_min ? html`, ${hrs(e.onsite_min)} on set` : ''}.</p>` : ''}
 <div class="card"><div class="entry-head"><h1>${e.job}</h1>${e.job_type ? html`<span class="badge ${typeClass(e.job_type)}">${e.job_type}</span>` : ''}</div>
 <div class="meta"><span>${prettyDate(e.date, true)}</span>${e.client ? html`<span>${e.client}</span>` : ''}${e.location ? html`<span>${icon.pin} ${e.location}</span>` : ''}${e.tz ? html`<span>${tzLabel(e.tz)}</span>` : ''}</div>
 ${e.crew_chief ? html`<p class="small">Crew chief: <b>${e.crew_chief}</b></p>` : ''}</div>
-<h2 class="sec">Crew &amp; hours <span class="muted">${hrs(e.paid_min)} total</span></h2>
+<h2 class="sec">Crew &amp; hours <span class="muted">${hrs(e.paid_min)} total${e.onsite_min ? html` · ${hrs(e.onsite_min)} on set` : ''}</span></h2>
 ${e.crew.map((c) => html`<div class="card crewcard"><div class="crew-top"><h3>${c.name}${c.role ? html` <span class="muted">· ${c.role}</span>` : ''}</h3><b class="hours">${hrs(c.paid_min)}</b></div>
 <dl class="times">${row('Start', t(c.start))}${row('Stop', t(c.stop))}
 ${(c.meals || []).map((m, i) => row(`Meal ${c.meals.length > 1 ? i + 1 : ''}`, `${t(m.start) || '?'} – ${t(m.end) || '?'}`))}
-${row('On site', t(c.on_set))}${row('Off site', t(c.wheels_up))}${row('On-site hours', c.onsite_min != null ? hrs(c.onsite_min) : '')}
+${row('On set start', t(c.on_set))}${row('On set end', t(c.wheels_up))}${row('On set hours', c.onsite_min != null ? hrs(c.onsite_min) : '')}${row('Total hours', c.paid_min != null ? hrs(c.paid_min) : '')}
 ${c.hours_override != null ? row('Hours (typed in)', c.hours_override + ' h') : ''}${row('Edit / DIT', c.edit_hours ? c.edit_hours + ' h' : '')}</dl>
 ${c.note ? html`<p class="small">${c.note}</p>` : ''}</div>`)}
 ${e.expenses.length || general.length ? html`<h2 class="sec">Expenses <span class="muted">${money(e.expense_total)}</span></h2>
@@ -164,7 +164,7 @@ ${error ? html`<p class="alert" role="alert">${error}</p>` : ''}
 </div>
 
 <section class="card stack" aria-labelledby="crew-h"><div class="sec-head"><h2 id="crew-h">Crew &amp; hours</h2><span class="muted" id="crew-total"></span></div>
-<p class="small muted">Everyone can have their own times. Fill in the first person, then tap <b>Copy times to everyone</b>.</p>
+<p class="small muted">Everyone can have their own times. <b>Start / Stop</b> make the total hours; <b>On set start / end</b> make the on set hours (any meal inside that window is taken out). Both are worked out for you. Fill in the first person, then tap <b>Copy times to everyone</b>.</p>
 <div id="crew-list"></div>
 <div class="row2"><button type="button" class="btn big" id="add-crew">${icon.plus} Add crew</button><button type="button" class="btn big" id="copy-times">Copy times to everyone</button></div>
 </section>
@@ -208,7 +208,7 @@ ${dl('dl-jobs', sugg.jobs)}${dl('dl-people', sugg.people)}${dl('dl-clients', sug
   return layout(req, { title: isNew ? 'New EOD' : 'Edit EOD', body, fab: false, scripts: ['/hours.js', '/form.js'] });
 }
 
-function settings(req, { smtp, schedules, log, msg, err, stats, drive }) {
+function settings(req, { smtp, schedules, log, msg, err, stats, drive, cal }) {
   const statusTag = (st) => html`<span class="tag tag-${st}">${st}</span>`;
   const period = (r) => (String(r.period_from).startsWith('test:') ? 'test' : r.period_from === r.period_to ? prettyDate(r.period_from) : `${prettyDate(r.period_from)} – ${prettyDate(r.period_to)}`);
   const body = html`<h1>Settings</h1>
@@ -236,6 +236,8 @@ ${log.map((r) => html`<tr><td class="small">${new Date(r.at).toLocaleString('en-
 
 <div class="card stack"><div class="sec-head"><h2>Google Drive</h2><a class="btn" href="/settings/drive">${drive && drive.connected ? 'Manage' : 'Set up'}</a></div>
 <p class="small">${drive && drive.connected ? html`Uploading EODs and receipts to Google Drive${drive.account ? html` as <b>${drive.account}</b>` : ''}. ${drive.pending ? `${drive.pending} waiting.` : 'All caught up.'}` : 'Copy every EOD (PDF) and its receipts into an organized, shareable Google Drive folder.'}</p></div>
+<div class="card stack"><div class="sec-head"><h2>Google Calendar</h2><a class="btn" href="/settings/calendar">${cal && cal.on ? 'Manage' : 'Set up'}</a></div>
+<p class="small">${cal && cal.needsReconnect ? html`<b class="warn">Reconnect to enable Calendar.</b> Google needs one more tick-box.` : cal && cal.on ? html`Each EOD is an event on the “${cal.name}” calendar with its PDF attached. ${cal.pending ? `${cal.pending} waiting.` : 'All caught up.'}` : 'Put every EOD on its own Google Calendar as an event, with the PDF attached.'}</p></div>
 <div class="card stack"><h2>Export</h2><p class="small"><a href="/export/hours.csv">All hours (CSV)</a> · <a href="/export/expenses.csv">All expenses (CSV)</a></p></div>
 <div class="card stack danger-zone"><h2>Danger zone</h2><p class="small">${stats.entries} EOD${stats.entries === 1 ? '' : 's'}, ${stats.receipts} receipt${stats.receipts === 1 ? '' : 's'} (${fmtMB(stats.uploadBytes)}). Clearing deletes them for good; you'll get a warning and a chance to download a CSV first.</p>
 <a class="btn danger big" href="/settings/clear">Clear all data…</a></div>
@@ -285,15 +287,26 @@ ${isAdmin && smtpOk && sch ? html`<form method="post" action="/settings/n/${sch.
   return layout(req, { title, active: 'settings', body, bare: true, fab: false });
 }
 
-function drivePage(req, { st, dev, msg, err }) {
+function drivePage(req, { st, dev, msg, err, cal }) {
   const when = (iso) => (iso ? new Date(iso).toLocaleString('en-US', { timeZone: cfg.TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' ' + tzShort(cfg.TZ) : 'never');
   const chk = (c) => (c ? raw(' checked') : '');
   const waiting = dev.state === 'waiting';
+  const linking = Boolean(st.link);
+  const desktop = st.clientType === 'desktop';
   const shareList = Object.keys(st.share).join(', ') || st.sharePending;
   const body = html`<div class="detail-head"><a class="back" href="/settings">${icon.left} Settings</a></div>
 <h1>Google Drive</h1>
 ${msg ? html`<p class="alert info" role="status">${msg}</p>` : ''}${err ? html`<p class="alert" role="alert">${err}</p>` : ''}
 ${st.authError ? html`<p class="alert" role="alert">${st.authError}</p>` : ''}
+${cal && cal.needsReconnect ? html`<div class="alert" role="alert"><b>Reconnect to enable Calendar.</b> Google Calendar is switched on, but the current Google sign-in only covers Drive. ${desktop ? html`Click <b>Reconnect Google</b> below and keep the Calendar box ticked.` : html`The “TVs and Limited Input devices” sign-in can't include Calendar (Google doesn't allow it there). Create a <b>Desktop app</b> OAuth client (README, “Google Calendar setup”), choose it below, Save, then reconnect.`}</div>` : ''}
+${linking ? html`<div class="card stack drive-connect" id="connect">
+<h2>Approve on Google</h2>
+<p>1. <a class="btn primary" href="${st.link.url}" target="_blank" rel="noopener">Open the Google sign-in</a> (opens a new tab). Pick the account and <b>Allow</b>, keeping <b>Drive</b> and <b>Calendar</b> ticked.</p>
+<p>2. Google then sends you to a page that says <b>“This site can't be reached”</b> (the address starts with <code>127.0.0.1:9004</code>). That is expected: nothing is wrong.</p>
+<form method="post" action="/settings/drive/connect-link/finish" class="stack" autocomplete="off">
+<label>3. Copy the <b>whole address</b> from that tab's address bar and paste it here<textarea name="pasted" rows="3" required spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="http://127.0.0.1:9004/?state=…&amp;code=…"></textarea></label>
+<button class="btn primary big" type="submit">Finish connecting</button></form>
+<form method="post" action="/settings/drive/cancel"><button class="btn" type="submit">Cancel</button></form></div>` : ''}
 ${waiting ? html`<div class="card stack drive-connect" id="connect" data-device-wait>
 <h2>Approve on Google</h2>
 <p>1. On any phone or computer open <a href="${dev.verification_url}" target="_blank" rel="noopener"><b>${dev.verification_url.replace(/^https?:\/\//, '')}</b></a></p>
@@ -303,16 +316,17 @@ ${waiting ? html`<div class="card stack drive-connect" id="connect" data-device-
 <form method="post" action="/settings/drive/cancel"><button class="btn" type="submit">Cancel</button></form></div>` : ''}
 ${['denied', 'expired', 'error'].includes(dev.state) ? html`<p class="alert" role="alert">${dev.state === 'denied' ? 'Access was denied on the Google page.' : dev.state === 'expired' ? 'The code expired before it was approved. Click Connect again.' : 'Connecting failed: ' + dev.error}</p>` : ''}
 
-${waiting && !st.connected ? '' : html`<div class="card stack drive-status">
+${(waiting || linking) && !st.connected ? '' : html`<div class="card stack drive-status">
 ${st.connected ? html`<div class="crew-top"><div><h2>Connected</h2><div class="small">${st.mode === 'sa' ? html`Service account <b>${st.account}</b> in a Shared Drive` : html`Google account <b>${st.account || '(unknown email)'}</b>`}</div></div><span class="tag tag-sent">${st.auto ? 'auto upload on' : 'auto upload off'}</span></div>
 ${st.rootUrl ? html`<p><a class="btn" href="${st.rootUrl}" target="_blank" rel="noopener">Open “${st.mode === 'sa' ? 'Shared Drive folder' : st.rootName}” in Google Drive</a></p>` : html`<p class="small muted">The “${st.rootName}” folder is created with the first upload (or press Test).</p>`}
 <p class="small" data-drive-counts><b>${st.synced}</b> of ${st.entries} EOD${st.entries === 1 ? '' : 's'} in Drive · <b>${st.pending}</b> waiting${st.failing ? html` · <span class="warn">${st.failing} retrying${st.dead ? ` (${st.dead} gave up)` : ''}</span>` : ''} · last upload ${when(st.lastSync)}</p>
 ${st.lastError && st.failing ? html`<p class="small muted">Last error: ${st.lastError}</p>` : ''}
 <div class="row3"><form method="post" action="/settings/drive/sync-all"><button class="btn" type="submit" style="width:100%">Sync all EODs</button></form>
 <form method="post" action="/settings/drive/test"><button class="btn" type="submit" style="width:100%">Test</button></form>
-<form method="post" action="/settings/drive/disconnect" data-confirm="Disconnect Google Drive? Uploads stop; files already in Drive stay."><button class="btn danger" type="submit" style="width:100%">Disconnect</button></form></div>`
+<form method="post" action="/settings/drive/disconnect" data-confirm="Disconnect Google Drive? Uploads stop; files already in Drive stay."><button class="btn danger" type="submit" style="width:100%">Disconnect</button></form></div>
+${st.mode === 'oauth' ? html`<form method="post" action="/settings/drive/connect"><button class="btn" type="submit"${waiting || linking ? raw(' disabled') : ''}>Reconnect Google${desktop ? ' (Drive + Calendar)' : ''}</button></form>` : ''}`
     : html`<h2>Not connected</h2><p class="small">Every EOD can be copied into a Google Drive folder: one folder per EOD with a PDF of the whole day and every receipt, named so they sort by date. Saving an EOD never waits for Drive.</p>
-${st.mode === 'oauth' ? (st.clientIdSet && st.secretSet ? html`<form method="post" action="/settings/drive/connect"><button class="btn primary big" type="submit"${waiting ? raw(' disabled') : ''}>Connect Google Drive</button></form>`
+${st.mode === 'oauth' ? (st.clientIdSet && st.secretSet ? html`<form method="post" action="/settings/drive/connect"><button class="btn primary big" type="submit"${waiting || linking ? raw(' disabled') : ''}>${desktop ? 'Connect Google (Drive + Calendar)' : 'Connect Google Drive'}</button></form>`
     : html`<p class="small warn">Step 1: paste the OAuth Client ID and secret below and Save. (How to get them: README, “Google Drive”.)</p>`) : html`<p class="small warn">Paste the service account key and the Shared Drive folder below, then Save.</p>`}`}
 </div>`}
 
@@ -322,7 +336,10 @@ ${st.mode === 'oauth' ? (st.clientIdSet && st.secretSet ? html`<form method="pos
 <label class="check"><input type="radio" name="mode" value="oauth"${chk(st.mode === 'oauth')} data-drive-mode> A Google account (simplest; files use that account's storage)</label>
 <label class="check"><input type="radio" name="mode" value="sa"${chk(st.mode === 'sa')} data-drive-mode> A service account + a Shared Drive (Workspace)</label></fieldset>
 <div class="stack" data-mode="oauth">
-<label>OAuth Client ID <span class="muted">(type “TVs and Limited Input devices”)</span><input name="client_id" value="${st.clientId}" placeholder="${st.clientIdSet ? (st.clientFromEnv ? 'set by GDRIVE_CLIENT_ID' : 'saved: leave blank to keep') : '…apps.googleusercontent.com'}" autocapitalize="off" spellcheck="false"></label>
+<fieldset class="stack plain"><legend><b>OAuth client type</b></legend>
+<label class="check"><input type="radio" name="client_type" value="desktop"${chk(desktop)}> Desktop app (recommended): Drive <b>and</b> Calendar; you paste back one address when connecting</label>
+<label class="check"><input type="radio" name="client_type" value="tv"${chk(!desktop)}> TVs and Limited Input devices: Drive only, approve with a short code at google.com/device</label></fieldset>
+<label>OAuth Client ID <span class="muted">(must match the type above)</span><input name="client_id" value="${st.clientId}" placeholder="${st.clientIdSet ? (st.clientFromEnv ? 'set by GDRIVE_CLIENT_ID' : 'saved: leave blank to keep') : '…apps.googleusercontent.com'}" autocapitalize="off" spellcheck="false"></label>
 <label>Client secret<input name="client_secret" type="password" placeholder="${st.secretSet ? 'saved: leave blank to keep' : ''}" autocomplete="new-password"></label>
 <label>Folder name in Drive<input name="root_name" value="${st.rootName}" maxlength="100"></label>
 </div>
@@ -340,14 +357,61 @@ ${st.mode === 'oauth' ? (st.clientIdSet && st.secretSet ? html`<form method="pos
 
 <div class="card stack"><h2>How it's organized</h2>
 <pre class="tree">${st.mode === 'sa' ? 'Shared Drive folder' : st.rootName}/
-  2026/
-    2026-11 November/
-      2026-11-13 Villanova promo (Film shoot)/
-        EOD 2026-11-13 Villanova promo.pdf
-        2026-11-13 Villanova promo - Lunch for crew - $86.40 (Personal).jpg
-        2026-11-13 Villanova promo - Gas - $63.65 (Card) 1.jpg</pre>
-<p class="small muted">The PDF has every field, each person's hours and the expenses. Edits replace the PDF (Drive keeps old versions) and add or remove receipts. “Clear all data” in the app never deletes anything in Drive.</p></div>`;
+  2026/                                year
+    11 November/                       month
+      2026-11-13/                      day
+        Villanova promo (Film shoot)/  one folder per job
+          EOD 2026-11-13 Villanova promo.pdf
+          2026-11-13 Villanova promo - Lunch for crew - $86.40 (Personal).jpg
+          2026-11-13 Villanova promo - Gas - $63.65 (Card) 1.jpg
+        Brooklyn AV install (AV install)/
+          EOD 2026-11-13 Brooklyn AV install.pdf
+          …</pre>
+<p class="small muted">Each job keeps its EOD PDF and its receipts together. The PDF has every field, each person's total and on set hours, and the expenses. Edits replace the PDF (Drive keeps old versions) and add or remove receipts. Two EODs for the same job on the same day get “#2” on the second folder. “Clear all data” in the app never deletes anything in Drive.</p></div>`;
   return layout(req, { title: 'Google Drive', active: 'settings', body, fab: false, scripts: ['/drive.js'] });
+}
+
+function calendarPage(req, { cal, msg, err }) {
+  const when = (iso) => (iso ? new Date(iso).toLocaleString('en-US', { timeZone: cfg.TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' ' + tzShort(cfg.TZ) : 'never');
+  const chk = (c) => (c ? raw(' checked') : '');
+  const sa = cal.driveMode === 'sa';
+  const body = html`<div class="detail-head"><a class="back" href="/settings">${icon.left} Settings</a></div>
+<h1>Google Calendar</h1>
+${msg ? html`<p class="alert info" role="status">${msg}</p>` : ''}${err ? html`<p class="alert" role="alert">${err}</p>` : ''}
+${!cal.driveConnected ? html`<p class="alert" role="alert">Calendar events carry the EOD PDF from Google Drive, so <a href="/settings/drive">connect Google Drive</a> first. Calendar uses the same Google connection.</p>` : ''}
+${cal.needsReconnect ? html`<div class="alert" role="alert"><b>Reconnect to enable Calendar.</b> The saved Google sign-in only covers Drive. <a href="/settings/drive"><b>Open Google Drive settings</b></a> and ${cal.clientType === 'desktop' ? 'click Reconnect Google (keep Calendar ticked).' : 'switch to a Desktop app OAuth client first: Google does not allow Calendar with the TVs and Limited Input type (see the README, “Google Calendar setup”).'}</div>` : ''}
+${cal.on && cal.driveConnected && !cal.needsReconnect ? html`<div class="card stack drive-status"><div class="crew-top"><div><h2>On</h2><div class="small">Calendar “${cal.name}”${cal.mode === 'paste' ? ' (an existing calendar you pasted)' : cal.created ? ' (created by this app)' : ' (created with the first event)'}</div></div><span class="tag tag-sent">auto add on</span></div>
+<p><a class="btn" href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noopener">Open Google Calendar</a></p>
+<p class="small" data-drive-counts><b>${cal.synced}</b> of ${cal.entries} EOD${cal.entries === 1 ? '' : 's'} on the calendar · <b>${cal.pending}</b> waiting${cal.failing ? html` · <span class="warn">${cal.failing} retrying${cal.dead ? ` (${cal.dead} gave up)` : ''}</span>` : ''} · last change ${when(cal.lastSync)}</p>
+${cal.lastError && cal.failing ? html`<p class="small muted">Last error: ${cal.lastError}</p>` : ''}
+<div class="row3" style="grid-template-columns:1fr 1fr"><form method="post" action="/settings/calendar/sync-all"><button class="btn" type="submit" style="width:100%">Sync all to Calendar</button></form>
+<form method="post" action="/settings/calendar/test"><button class="btn" type="submit" style="width:100%">Test</button></form></div></div>` : ''}
+
+<form method="post" action="/settings/calendar/save" class="card stack" autocomplete="off">
+<h2>Setup</h2>
+<label class="check"><input type="checkbox" name="cal_on" value="1"${chk(cal.on)}> Put every EOD on a Google Calendar (one event per EOD, PDF attached)</label>
+${sa ? html`<input type="hidden" name="cal_mode" value="paste"><p class="small">With a service account, use a calendar you create in Google Calendar and share with <b>${cal.saEmail || 'the service account'}</b> using <b>“Make changes to events”</b>.</p>`
+    : html`<fieldset class="stack plain"><legend><b>Which calendar</b></legend>
+<label class="check"><input type="radio" name="cal_mode" value="auto"${chk(cal.mode === 'auto')}> Let the app create its own calendar (recommended)</label>
+<label class="check"><input type="radio" name="cal_mode" value="paste"${chk(cal.mode === 'paste')}> Use a calendar I already have (paste its ID)</label></fieldset>
+<label>Calendar name <span class="muted">(for the one the app creates)</span><input name="cal_name" value="${cal.name}" maxlength="100"></label>`}
+<label>Calendar ID <span class="muted">${sa ? '(required)' : '(only for “use a calendar I already have”)'}; in Google Calendar: the calendar's ⋮ menu > Settings and sharing > Integrate calendar > Calendar ID</span><input name="cal_paste_id" value="${cal.pasteId}" placeholder="abc123…@group.calendar.google.com" autocapitalize="off" spellcheck="false"></label>
+<button class="btn primary big" type="submit">Save</button></form>
+
+<div class="card stack"><h2>What each event looks like</h2>
+<div class="evprev"><b>Villanova promo (Film shoot) – EOD</b><div class="small muted">Fri, Nov 13 · 7:00am – 5:00pm (from the earliest start to the latest stop; all day if nobody has times)</div>
+<pre class="tree">• Jason (DP): 7:00am–5:00pm, meal 12:00pm–12:30pm, on set 7:30am–4:30pm
+   → on set 8.5 h, total 9.5 h
+• Sam: 8:00am–4:00pm, on set 7:30am–4:30pm
+   → on set 9 h, total 8 h
+Total hours: 17.5 h · On set hours: 17.5 h
+EXPENSES: $150.05 ($86.40 to reimburse)
+VEHICLE: Sprinter (company) · 120 mi
+NOTES: …
+Open in ${cfg.APP_NAME}: ${cfg.PUBLIC_URL || 'https://eod.example.com'}/e/42</pre>
+<div class="small">📎 EOD 2026-11-13 Villanova promo.pdf <span class="muted">(the PDF from Drive)</span></div></div>
+<p class="small muted">Editing the EOD updates the same event; deleting it removes the event or renames it “(deleted) …”, matching the Drive setting. ${cal.publicUrlSet ? '' : html`<b class="warn">PUBLIC_URL is not set</b>, so events have no link back to the app. Set it in the container environment.`} The attached PDF is only visible to people who can open it in Drive, so share the Drive folder and the calendar with the same people. Clear all data never deletes events.</p></div>`;
+  return layout(req, { title: 'Google Calendar', active: 'settings', body, fab: false, scripts: ['/drive.js'] });
 }
 
 const fmtMB = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : b >= 1024 ? Math.round(b / 1024) + ' KB' : b + ' bytes');
@@ -376,4 +440,4 @@ function message(req, { title, text, back }) {
   return layout(req, { title, body: html`<div class="card narrow"><h1>${title}</h1><p>${text}</p><a class="btn big" href="${back || '/'}">Back</a></div>` });
 }
 
-module.exports = { layout, login, adminLogin, week, list, detail, form, settings, scheduleForm, summaryPage, clearPage, drivePage, message, tzShort };
+module.exports = { layout, login, adminLogin, week, list, detail, form, settings, scheduleForm, summaryPage, clearPage, drivePage, calendarPage, message, tzShort };

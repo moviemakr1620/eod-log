@@ -11,6 +11,7 @@ const views = require('./views');
 const summary = require('./summary');
 const mailer = require('./mailer');
 const drive = require('./drive');
+const gcal = require('./gcal');
 const { isDate, weekStart, todayIn, addDays, str, nowParts, TIMEZONES } = require('./util');
 const H = require('../public/hours.js');
 
@@ -197,7 +198,7 @@ function settingsPage(req, res, extra = {}, status = 200) {
   const lastBy = {};
   mailer.recentSends(500).forEach((r) => { if (!lastBy[r.schedule_id]) lastBy[r.schedule_id] = r; });
   const schedules = mailer.listSchedules().map((x) => ({ ...x, desc: mailer.describe(x), last: lastBy[x.id], preview: mailer.previewPeriod(x) }));
-  send(res, views.settings(req, { smtp, schedules, log: mailer.recentSends(15), stats: dataStats(), drive: drive.status(), ...extra }), status);
+  send(res, views.settings(req, { smtp, schedules, log: mailer.recentSends(15), stats: dataStats(), drive: drive.status(), cal: gcal.status(), ...extra }), status);
 }
 app.get('/settings', requireAdmin, (req, res) => settingsPage(req, res, { msg: req.query.msg ? String(req.query.msg).slice(0, 200) : '' }));
 app.get('/settings/n/new', requireAdmin, (req, res) => send(res, views.scheduleForm(req, { sch: { name: '', recipients: '', frequency: 'daily', weekday: 1, send_time: '18:00', tz: cfg.TZ, covers: 'today', attach: 0, enabled: 1 }, isNew: true })));
@@ -290,7 +291,7 @@ app.post('/settings/clear', requireAdmin, async (req, res) => {
 
 // ---- Google Drive
 const parseFolderId = (v) => { const s = String(v || '').trim(); const m = /folders\/([\w-]{10,})/.exec(s) || /[?&]id=([\w-]{10,})/.exec(s); return m ? m[1] : (/^[\w-]{10,}$/.test(s) ? s : ''); };
-const drivePage = (req, res, extra = {}, status = 200) => send(res, views.drivePage(req, { st: drive.status(), dev: drive.deviceState(), ...extra }), status);
+const drivePage = (req, res, extra = {}, status = 200) => send(res, views.drivePage(req, { st: drive.status(), dev: drive.deviceState(), cal: gcal.status(), ...extra }), status);
 const driveBack = (res, msg, isErr) => res.redirect(303, '/settings/drive?' + (isErr ? 'err=' : 'msg=') + encodeURIComponent(String(msg).slice(0, 300)));
 app.get('/settings/drive', requireAdmin, (req, res) => drivePage(req, res, { msg: str(req.query.msg, 300) || '', err: str(req.query.err, 300) || '' }));
 app.get('/settings/drive/status.json', requireAdmin, (req, res) => { const st = drive.status(); res.json({ dev: drive.deviceState(), connected: st.connected, pending: st.pending, synced: st.synced }); });
@@ -313,6 +314,7 @@ app.post('/settings/drive/save', requireAdmin, async (req, res) => {
     if (b.shared_folder.trim() && !fid) return driveBack(res, 'Could not find a folder ID in that link.', true);
     if (fid !== (drive.S.get('shared_folder_id') || '')) { drive.S.set('shared_folder_id', fid); if (m === 'sa') drive.resetMapping(); }
   }
+  if (b.client_type === 'tv' || b.client_type === 'desktop') drive.S.set('client_type', b.client_type);
   const rn = str(b.root_name, 100); if (rn) drive.S.set('root_name', rn);
   drive.S.set('on_delete', b.on_delete === 'trash' ? 'trash' : 'mark');
   drive.S.set('auto', b.auto === '1' ? '1' : '0');
@@ -325,9 +327,15 @@ app.post('/settings/drive/save', requireAdmin, async (req, res) => {
   driveBack(res, 'Saved.' + warn, Boolean(warn && !/after you connect/.test(warn)));
 });
 app.post('/settings/drive/connect', requireAdmin, async (req, res) => {
-  try { await drive.startDevice(); res.redirect(303, '/settings/drive#connect'); } catch (err) { driveBack(res, 'Could not start the Google sign-in: ' + err.message, true); }
+  try {
+    if (drive.clientType() === 'desktop') drive.startLink(); else await drive.startDevice();
+    res.redirect(303, '/settings/drive#connect');
+  } catch (err) { driveBack(res, 'Could not start the Google sign-in: ' + err.message, true); }
 });
-app.post('/settings/drive/cancel', requireAdmin, (req, res) => { drive.cancelDevice(); res.redirect(303, '/settings/drive'); });
+app.post('/settings/drive/connect-link/finish', requireAdmin, async (req, res) => {
+  try { await drive.finishLink(req.body.pasted); driveBack(res, gcal.needsReconnect() ? 'Connected to Google, but Calendar was not allowed. Reconnect and tick the Calendar box.' : 'Connected to Google Drive' + (drive.calendarScopeOk() ? ' and Calendar.' : '.'), gcal.needsReconnect()); } catch (err) { res.redirect(303, '/settings/drive?err=' + encodeURIComponent(String(err.message).slice(0, 300)) + '#connect'); }
+});
+app.post('/settings/drive/cancel', requireAdmin, (req, res) => { drive.cancelDevice(); drive.cancelLink(); res.redirect(303, '/settings/drive'); });
 app.post('/settings/drive/test', requireAdmin, async (req, res) => {
   try { await drive.test(); driveBack(res, 'Test passed: the folder is reachable and a test file was written (and then removed).'); } catch (err) { driveBack(res, 'Test failed: ' + err.message, true); }
 });
@@ -340,6 +348,37 @@ app.post('/settings/drive/disconnect', requireAdmin, async (req, res) => {
   driveBack(res, 'Disconnected. Files already in Google Drive are untouched.');
 });
 
+// ---- Google Calendar (same connection as Drive)
+const calPage = (req, res, extra = {}, status = 200) => send(res, views.calendarPage(req, { cal: gcal.status(), ...extra }), status);
+const calBack = (res, msg, isErr) => res.redirect(303, '/settings/calendar?' + (isErr ? 'err=' : 'msg=') + encodeURIComponent(String(msg).slice(0, 300)));
+const parseCalId = (v) => { const s = String(v || '').trim(); const m = /[?&]src=([^&]+)/.exec(s); return (m ? decodeURIComponent(m[1]) : s).replace(/\s+/g, ''); };
+app.get('/settings/calendar', requireAdmin, (req, res) => calPage(req, res, { msg: str(req.query.msg, 300) || '', err: str(req.query.err, 300) || '' }));
+app.post('/settings/calendar/save', requireAdmin, (req, res) => {
+  const b = req.body;
+  const wasOn = gcal.S.get('cal_on') === '1';
+  const before = [gcal.calMode(), gcal.S.get('cal_paste_id') || ''].join('|');
+  const on = b.cal_on === '1';
+  if (on && !drive.connected()) return calBack(res, 'Calendar events need the EOD PDF in Google Drive. Connect Google Drive first (Settings > Google Drive).', true);
+  if (b.cal_mode === 'auto' || b.cal_mode === 'paste') gcal.S.set('cal_mode', b.cal_mode);
+  const nm = str(b.cal_name, 100); if (nm) gcal.S.set('cal_name', nm);
+  if (b.cal_paste_id !== undefined) gcal.S.set('cal_paste_id', parseCalId(b.cal_paste_id));
+  if (on && gcal.calMode() === 'paste' && !gcal.S.get('cal_paste_id')) return calBack(res, 'Paste the ID of the calendar to use (Google Calendar > the calendar > Settings and sharing > Integrate calendar > Calendar ID).', true);
+  gcal.S.set('cal_on', on ? '1' : '0');
+  const after = [gcal.calMode(), gcal.S.get('cal_paste_id') || ''].join('|');
+  const n = gcal.settingsChanged({ calendarSwitched: on && (!wasOn || before !== after) });
+  const warn = on && gcal.needsReconnect() ? ' Calendar is on, but this Google sign-in does not include Calendar yet: reconnect (Settings > Google Drive).' : '';
+  calBack(res, (on ? 'Saved. Calendar is on.' : 'Saved. Calendar is off.') + (n ? ` Adding ${n} EOD${n === 1 ? '' : 's'} to the calendar in the background.` : '') + warn, Boolean(warn));
+});
+app.post('/settings/calendar/test', requireAdmin, async (req, res) => {
+  try { const r = await gcal.test(); calBack(res, `Test passed: calendar “${r.name}” is reachable and a test event was created and removed.`); } catch (err) { calBack(res, 'Test failed: ' + err.message, true); }
+});
+app.post('/settings/calendar/sync-all', requireAdmin, (req, res) => {
+  if (!gcal.wanted()) return calBack(res, 'Turn Google Calendar on first.', true);
+  if (!drive.connected()) return calBack(res, 'Connect Google Drive first.', true);
+  if (gcal.needsReconnect()) return calBack(res, 'Reconnect to enable Calendar first (Settings > Google Drive).', true);
+  const n = gcal.enqueueAll(); calBack(res, `Queued ${n} EOD${n === 1 ? '' : 's'} for the calendar. This page shows progress.`);
+});
+
 // ---- CSV export
 const csvCell = (v) => { if (v === null || v === undefined) return ''; let s = String(v); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
 const csv = (rows) => rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
@@ -350,7 +389,7 @@ function exportEntries(req) {
   return store.search({ ...f, limit: 100000, offset: 0 }).entries.reverse();
 }
 app.get('/export/hours.csv', (req, res) => {
-  const rows = [['date', 'job', 'job_type', 'client', 'location', 'time_zone', 'crew_chief', 'name', 'role', 'start', 'stop', 'meals', 'on_site', 'off_site', 'hours', 'on_site_hours', 'meal_hours', 'hours_typed_in', 'edit_dit_hours', 'entry_url']];
+  const rows = [['date', 'job', 'job_type', 'client', 'location', 'time_zone', 'crew_chief', 'name', 'role', 'start', 'stop', 'meals', 'on_set_start', 'on_set_end', 'total_hours', 'on_set_hours', 'meal_hours', 'hours_typed_in', 'edit_dit_hours', 'entry_url']];
   exportEntries(req).forEach((e) => e.crew.forEach((c) => rows.push([e.date, e.job, e.job_type, e.client, e.location, e.tz, e.crew_chief, c.name, c.role, c.start, c.stop,
     (c.meals || []).map((m) => `${m.start || '?'}-${m.end || '?'}`).join(' '), c.on_set, c.wheels_up, H.dec(c.paid_min), H.dec(c.onsite_min), H.dec(c.meal_min), c.hours_override, c.edit_hours, `${cfg.PUBLIC_URL}/e/${e.id}`])));
   res.type('text/csv').attachment('eod-hours.csv').send(csv(rows));

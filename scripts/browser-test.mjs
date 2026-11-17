@@ -42,6 +42,11 @@ for (const [name, bt, dev] of [['WebKit iPhone 13', webkit, devices['iPhone 13']
   await row(0).locator('.addmeal').click();
   await row(0).locator('[data-m=start]').fill('12:00'); await row(0).locator('[data-m=end]').fill('12:30');
   ok((await row(0).locator('[data-total]').textContent()).includes('10 h'), `${name}: meal deducted once added (10 h)`);
+  ok(await row(0).locator('[data-f=on_set]').isVisible() && await row(0).locator('[data-f=wheels_up]').isVisible() && await row(0).locator('[data-f=start]').isVisible() && await row(0).locator('[data-f=stop]').isVisible(), `${name}: Start/Stop and On set start/end are always visible (no + Add, no fold-out)`);
+  ok(!(await row(0).locator('[data-onset]').textContent()).includes(' h'), `${name}: on set hours blank until on set times are entered`);
+  await row(0).locator('[data-f=on_set]').fill('07:00'); await row(0).locator('[data-f=wheels_up]').fill('18:30');
+  ok((await row(0).locator('[data-onset]').textContent()).includes('11 h') && (await row(0).locator('[data-total]').textContent()).includes('10 h'), `${name}: on set 7:00-6:30 = 11.5 h minus the 12:00-12:30 meal = 11 h live, total hours still 10 h`);
+  ok((await p.locator('#crew-total').textContent()).includes('Total 10 h') && (await p.locator('#crew-total').textContent()).includes('On set 11 h'), `${name}: entry totals show total + on set hours live`);
   await p.locator('#add-crew').click();
   await row(1).locator('[data-f=name]').fill('Maria Lopez');
   ok(await val(row(1).locator('[data-f=start]')) === '07:30', `${name}: new crew row starts with the first row's times`);
@@ -49,11 +54,9 @@ for (const [name, bt, dev] of [['WebKit iPhone 13', webkit, devices['iPhone 13']
   await row(2).locator('[data-f=name]').fill('Night Owl');
   await row(2).locator('.meal .rm-meal').click();
   await row(2).locator('[data-f=start]').fill('18:00'); await row(2).locator('[data-f=stop]').fill('02:00');
-  ok(await row(2).locator('.site').count() === 0 && await row(2).locator('.addsite').isVisible(), `${name}: site time hidden by default behind "+ Add site time"`);
-  await row(2).locator('.addsite').click();
+  ok(await row(2).locator('.addsite, .site').count() === 0 && await row(2).locator('[data-f=on_set]').isVisible() && !(await row(2).locator('details').evaluate((d) => d.open)), `${name}: On set fields are right on the row, not behind + Add or More`);
   await row(2).locator('[data-f=on_set]').fill('17:30'); await row(2).locator('[data-f=wheels_up]').fill('02:30');
-  ok(!(await row(2).locator('.addsite').isVisible()), `${name}: add-site button hides once site time is shown`);
-  ok((await row(2).locator('[data-total]').textContent()).includes('8 h') && (await row(2).locator('[data-detail]').textContent()).includes('9 h on site'), `${name}: overnight 6pm-2am = 8 h, on-site 9 h shown separately`);
+  ok((await row(2).locator('[data-total]').textContent()).includes('8 h') && (await row(2).locator('[data-onset]').textContent()).includes('9 h'), `${name}: overnight 6pm-2am = 8 h total, on set 5:30pm-2:30am = 9 h, shown separately`);
   // a 4th row with times but no name must block saving with a message, not silently drop
   await p.locator('#add-crew').click();
   await p.locator('#save-btn').click();
@@ -64,18 +67,18 @@ for (const [name, bt, dev] of [['WebKit iPhone 13', webkit, devices['iPhone 13']
   await Promise.all([p.waitForURL(/\/e\/\d+/), p.locator('#save-btn').click()]);
   let t = await p.locator('main').innerText();
   ok(/Saved\. 3 crew, 28 h total/.test(t), `${name}: saved: 3 crew, 28 h total (10 + 10 + 8)`);
-  ok(t.includes('7:30am') && t.includes('6:00pm') && t.includes('2:00am') && /On-site hours/i.test(t) && /9 h/.test(t), `${name}: start/stop and on-site hours shown on the entry`);
+  ok(t.includes('7:30am') && t.includes('6:00pm') && t.includes('2:00am') && /On set hours/i.test(t) && /Total hours/i.test(t) && /9 h/.test(t) && /11 h/.test(t), `${name}: start/stop, on set hours and total hours shown on the entry`);
   // edit: change Maria's stop, save again
   const id = /\/e\/(\d+)/.exec(p.url())[1];
   await p.goto(`${BASE}/e/${id}/edit`);
   ok(await val(row(1).locator('[data-f=stop]')) === '18:00' && await val(row(2).locator('[data-f=stop]')) === '02:00', `${name}: edit form loads saved times`);
-  ok(await val(row(2).locator('.site [data-f=on_set]')) === '17:30' && await row(0).locator('.site').count() === 0, `${name}: edit shows saved site time expanded (only where set)`);
+  ok(await val(row(2).locator('[data-f=on_set]')) === '17:30' && await val(row(0).locator('[data-f=on_set]')) === '07:00' && (await row(0).locator('[data-onset]').textContent()).includes('11 h'), `${name}: edit shows the saved on set times and recalculates on set hours (11 h)`);
   // copy times to everyone carries site time; removing it works
   await row(2).locator('[data-f=name]').fill('Night Owl');
   await p.evaluate(() => { const rows = document.querySelectorAll('.crew-row'); rows[0].parentNode.insertBefore(rows[2], rows[0]); });
   await p.locator('#copy-times').click();
-  ok(await val(row(1).locator('.site [data-f=wheels_up]')) === '02:30' && await val(row(2).locator('[data-f=stop]')) === '02:00', `${name}: "Copy times to everyone" includes site time`);
-  await row(1).locator('.rm-site').click(); await row(2).locator('.rm-site').click();
+  ok(await val(row(1).locator('[data-f=wheels_up]')) === '02:30' && await val(row(2).locator('[data-f=stop]')) === '02:00' && (await row(1).locator('[data-onset]').textContent()).includes('9 h'), `${name}: "Copy times to everyone" includes on set times`);
+  for (const i of [1, 2]) { await row(i).locator('[data-f=on_set]').fill(''); await row(i).locator('[data-f=wheels_up]').fill(''); }
   // restore Jason (row 1, with his meal) and Maria (row 2) to 7:30-6pm
   await row(1).locator('[data-f=start]').fill('07:30'); await row(1).locator('[data-f=stop]').fill('18:00');
   await row(1).locator('.addmeal').click(); await row(1).locator('[data-m=start]').fill('12:00'); await row(1).locator('[data-m=end]').fill('12:30');
@@ -83,7 +86,7 @@ for (const [name, bt, dev] of [['WebKit iPhone 13', webkit, devices['iPhone 13']
   await row(2).locator('[data-f=stop]').fill('20:00');
   await Promise.all([p.waitForURL(/\/e\/\d+\?saved/), p.locator('#save-btn').click()]);
   t = await p.locator('main').innerText();
-  ok(/30\.5 h total/.test(t) && t.includes('8:00pm') && /On-site hours/i.test(t), `${name}: edit saved (Night Owl first, Maria to 8pm: 8 + 10 + 12.5 = 30.5 h)`);
+  ok(/30\.5 h total/.test(t) && t.includes('8:00pm') && /On set hours/i.test(t), `${name}: edit saved (Night Owl first, Maria to 8pm: 8 + 10 + 12.5 = 30.5 h)`);
   // a browser/device that reports seconds ("07:30:00") must still save
   await p.goto(BASE + '/new'); await p.fill('input[name=job]', `Seconds ${name}`);
   await p.evaluate(() => { const r = document.querySelector('.crew-row'); r.querySelector('[data-f=start]').value = '07:30:00'; r.querySelector('[data-f=stop]').value = '18:00:00.000'; r.querySelector('[data-f=stop]').dispatchEvent(new Event('change', { bubbles: true })); });

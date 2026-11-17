@@ -1,5 +1,6 @@
-// Google Drive sync: every EOD becomes a folder with a PDF and its receipt files.
-//   <Root>/<YYYY>/<YYYY-MM> <Month>/<YYYY-MM-DD> <Job> (<Type>)/EOD <date> <job>.pdf + receipts
+// Google Drive sync: every EOD job gets its own folder holding the EOD PDF and that job's receipts.
+//   <Root>/<YYYY>/<MM> <Month>/<YYYY-MM-DD>/<Job> (<Type>)/EOD <date> <job>.pdf + receipts
+// (year folder > month folder > day folder > one folder per job). Google Calendar events live in ./gcal.js and use the same connection.
 // Two ways to connect:
 //   oauth: a Google account via the OAuth device flow (scope drive.file: the app only sees what it creates). Files use that account's storage.
 //   sa:    a service account key + a folder in a Shared Drive (service accounts have no storage of their own, so My Drive won't work).
@@ -19,7 +20,10 @@ const RETRY_BASE_S = Number(env.GDRIVE_RETRY_BASE_SEC || 30);
 const MAX_ATTEMPTS = 12; // ~ a day of backoff, then it stays "failed" until Sync all / next edit
 const FOLDER = 'application/vnd.google-apps.folder';
 const SCOPE_USER = 'https://www.googleapis.com/auth/drive.file';
-const SCOPE_SA = 'https://www.googleapis.com/auth/drive';
+const SCOPE_CAL = 'https://www.googleapis.com/auth/calendar';
+const SCOPE_SA = 'https://www.googleapis.com/auth/drive ' + SCOPE_CAL; // a service account's scopes are just a request (no consent screen); Calendar only works once a calendar is shared with it
+const AUTH_URL = (env.GDRIVE_AUTH_URL || 'https://accounts.google.com/o/oauth2/v2/auth');
+const LOOPBACK = 'http://127.0.0.1:9004'; // desktop-app clients may redirect to any loopback port; nothing listens here, the person copies the address bar instead
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 // ---------- settings (secrets live in the DB on the /data volume or in env; never logged, never rendered back)
@@ -31,6 +35,10 @@ const S = {
 const clientId = () => env.GDRIVE_CLIENT_ID || S.get('client_id') || '';
 const clientSecret = () => env.GDRIVE_CLIENT_SECRET || S.get('client_secret') || '';
 const mode = () => S.get('mode') || 'oauth';
+/** 'desktop' = Desktop-app client + "paste the address" sign-in (Drive + Calendar). 'tv' = TVs and Limited Input client + device code (Drive only: Google does not allow Calendar scopes there). */
+const clientType = () => (env.GDRIVE_CLIENT_TYPE === 'tv' || env.GDRIVE_CLIENT_TYPE === 'desktop' ? env.GDRIVE_CLIENT_TYPE : S.get('client_type') || (clientId() ? 'tv' : 'desktop'));
+/** Does the saved sign-in include Calendar? (A service account always "has" it; the calendar must then be shared with it.) */
+function calendarScopeOk() { return mode() === 'sa' ? true : / ?https:\/\/www\.googleapis\.com\/auth\/calendar( |$)/.test(S.get('scope') || ''); }
 function saKey() {
   let raw = S.get('sa_json');
   if (!raw && env.GDRIVE_SA_FILE) { try { raw = fs.readFileSync(env.GDRIVE_SA_FILE, 'utf8'); } catch { /* missing */ } }
@@ -52,8 +60,16 @@ function safeName(s, max = MAXNAME) {
 }
 const money = (n) => '$' + Number(n).toFixed(2);
 function yearName(date) { return date.slice(0, 4); }
-function monthName(date) { return `${date.slice(0, 7)} ${MONTHS[Number(date.slice(5, 7)) - 1]}`; }
-function folderName(e) { return safeName(`${e.date} ${e.job}${e.job_type ? ` (${e.job_type})` : ''}`); }
+function monthName(date) { return `${date.slice(5, 7)} ${MONTHS[Number(date.slice(5, 7)) - 1]}`; }
+const dayName = (date) => date;
+/** The job's own folder inside the day folder: "Job name (Type)". The date is already in the day folder above it. */
+function folderName(e) { return safeName(`${e.job}${e.job_type ? ` (${e.job_type})` : ''}`); }
+/** Two EODs for the same job and day (e.g. two crews) must not share a folder: the later one gets " #2", " #3"... */
+function jobFolderName(e) {
+  const base = folderName(e);
+  const earlier = db.prepare('SELECT job, job_type FROM entries WHERE date=? AND id<? ORDER BY id').all(e.date, e.id).filter((o) => folderName(o) === base).length;
+  return earlier ? safeName(`${base} #${earlier + 1}`) : base;
+}
 function pdfName(e) { return safeName(`EOD ${e.date} ${e.job}`, 150) + '.pdf'; }
 const EXT = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/heic': '.heic', 'image/heif': '.heif', 'image/gif': '.gif', 'application/pdf': '.pdf' };
 /** Receipt file names: "<date> <job> - <expense> - $12.34 (Card|Personal) 1.jpg"; numbered per expense. */
@@ -184,30 +200,37 @@ async function root() {
 }
 const folderChecked = new Map();
 async function folderFor(key, name, parent) {
-  const row = db.prepare('SELECT file_id FROM drive_folders WHERE key=?').get(key);
+  const row = db.prepare('SELECT file_id, name FROM drive_folders WHERE key=?').get(key);
   if (row) {
-    // someone may have deleted the year/month folder in Drive: re-check now and then
-    if (Date.now() - (folderChecked.get(key) || 0) < 600000) return row.file_id;
-    const f = await getFile(row.file_id);
-    if (f && !f.trashed) { folderChecked.set(key, Date.now()); return row.file_id; }
-    db.prepare('DELETE FROM drive_folders WHERE key=?').run(key);
+    if (row.name !== name) { // naming scheme changed (older versions called months "2026-11 November"): rename the folder, don't make a second one
+      try { await patchMeta(row.file_id, { name }); db.prepare('UPDATE drive_folders SET name=? WHERE key=?').run(name, key); folderChecked.set(key, Date.now()); return row.file_id; } catch (err) { if (err.status !== 404) throw err; db.prepare('DELETE FROM drive_folders WHERE key=?').run(key); row.gone = true; }
+    }
+    if (!row.gone) {
+      // someone may have deleted the folder in Drive: re-check now and then
+      if (Date.now() - (folderChecked.get(key) || 0) < 600000) return row.file_id;
+      const f = await getFile(row.file_id);
+      if (f && !f.trashed) { folderChecked.set(key, Date.now()); return row.file_id; }
+      db.prepare('DELETE FROM drive_folders WHERE key=?').run(key);
+    }
   }
   const f = await createFolder(name, parent);
-  db.prepare('INSERT OR REPLACE INTO drive_folders (key,file_id) VALUES (?,?)').run(key, f.id);
+  db.prepare('INSERT OR REPLACE INTO drive_folders (key,file_id,name) VALUES (?,?,?)').run(key, f.id, name);
   folderChecked.set(key, Date.now());
   return f.id;
 }
-async function monthFolder(date) {
+/** root > 2026 > 11 November > 2026-11-13 ; returns the day folder's id */
+async function dayFolder(date) {
   const r = await root();
   const y = await folderFor(`y:${yearName(date)}`, yearName(date), r);
-  return folderFor(`m:${date.slice(0, 7)}`, monthName(date), y);
+  const m = await folderFor(`m:${date.slice(0, 7)}`, monthName(date), y);
+  return folderFor(`d:${date}`, dayName(date), m);
 }
 
 // ---------- sync one entry
 async function syncEntry(e) {
   let de = db.prepare('SELECT * FROM drive_entries WHERE entry_id=?').get(e.id);
-  const parent = await monthFolder(e.date);
-  const fname = folderName(e);
+  const parent = await dayFolder(e.date);
+  const fname = jobFolderName(e);
   if (de && de.folder_id) {
     const f = await getFile(de.folder_id);
     if (!f || f.trashed) { db.prepare('DELETE FROM drive_files WHERE entry_id=?').run(e.id); db.prepare('UPDATE drive_entries SET folder_id=NULL, pdf_id=NULL WHERE id=?').run(de.id); de = { ...de, folder_id: null, pdf_id: null }; }
@@ -262,6 +285,7 @@ function enqueue(entryId) {
 }
 /** Call BEFORE deleting the entry row: keeps its Drive folder id so the worker can mark/trash it. */
 function onDelete(entryId) {
+  require('./gcal').onDelete(entryId);
   db.prepare('DELETE FROM drive_queue WHERE entry_id=?').run(entryId);
   db.prepare('DELETE FROM drive_files WHERE entry_id=?').run(entryId);
   const de = db.prepare('SELECT id FROM drive_entries WHERE entry_id=?').get(entryId);
@@ -283,8 +307,9 @@ function resetMapping({ requeue = false } = {}) {
   db.exec('DELETE FROM drive_queue; DELETE FROM drive_files; DELETE FROM drive_entries; DELETE FROM drive_folders;');
   if (requeue) db.prepare("INSERT INTO drive_queue (entry_id,attempts,next_at,queued_at) SELECT id,0,0,? FROM entries").run(new Date().toISOString());
   S.del('root_id'); rootChecked = 0; folderChecked.clear();
+  if (!requeue) require('./gcal').reset(); // new Google account / drive: the old calendar events no longer belong to us
 }
-function forgetEntries() { db.exec('DELETE FROM drive_queue; DELETE FROM drive_files; DELETE FROM drive_entries;'); }
+function forgetEntries() { db.exec('DELETE FROM drive_queue; DELETE FROM drive_files; DELETE FROM drive_entries;'); require('./gcal').forget(); }
 
 let running = false, timer = null, kickTimer = null;
 function kick() { if (kickTimer) return; kickTimer = setTimeout(() => { kickTimer = null; runOnce().catch(() => {}); }, 300); kickTimer.unref?.(); }
@@ -299,7 +324,8 @@ async function runOnce(opts) {
 let wake = null;
 function scheduleNext() {
   if (!connected()) return;
-  const r = db.prepare(`SELECT MIN(n) n FROM (SELECT MIN(next_at) n FROM drive_queue WHERE attempts<${MAX_ATTEMPTS} UNION ALL SELECT MIN(next_at) FROM drive_entries WHERE pending_delete=1 AND attempts<${MAX_ATTEMPTS})`).get();
+  const r = db.prepare(`SELECT MIN(n) n FROM (SELECT MIN(next_at) n FROM drive_queue WHERE attempts<${MAX_ATTEMPTS} UNION ALL SELECT MIN(next_at) FROM drive_entries WHERE pending_delete=1 AND attempts<${MAX_ATTEMPTS}
+    UNION ALL SELECT MIN(next_at) FROM cal_queue WHERE attempts<${MAX_ATTEMPTS} UNION ALL SELECT MIN(next_at) FROM cal_entries WHERE pending_delete=1 AND attempts<${MAX_ATTEMPTS})`).get();
   if (!r || r.n == null) return;
   const ms = Math.max(200, r.n - Date.now());
   if (ms > TICK_MS) return;
@@ -314,12 +340,18 @@ async function runInner({ limit = 50 } = {}) {
       const now = Date.now();
       const del = db.prepare('SELECT * FROM drive_entries WHERE pending_delete=1 AND next_at<=? AND attempts<? ORDER BY id LIMIT 1').get(now, MAX_ATTEMPTS);
       const job = del ? null : db.prepare('SELECT * FROM drive_queue WHERE next_at<=? AND attempts<? ORDER BY next_at, entry_id LIMIT 1').get(now, MAX_ATTEMPTS);
-      if (!del && !job) break;
+      if (!del && !job) {
+        const r = await require('./gcal').step(now); // calendar events run after the PDF is in Drive
+        if (!r) break;
+        if (r.ok) done++;
+        if (r.fatal) break;
+        continue;
+      }
       try {
         if (del) await syncDeleted(del);
         else {
           const e = store.get(job.entry_id);
-          if (e) await syncEntry(e);
+          if (e) { await syncEntry(e); require('./gcal').enqueue(job.entry_id); }
           // edited again while uploading? enqueue() gave the row a new queued_at, so it stays and runs again
           db.prepare('DELETE FROM drive_queue WHERE entry_id=? AND queued_at IS ?').run(job.entry_id, job.queued_at);
         }
@@ -340,8 +372,19 @@ async function runInner({ limit = 50 } = {}) {
   } finally { running = false; }
   return { done };
 }
+/** One-time: the folder layout changed (year > month > day > job). Re-sync every entry that is already in Drive so its folder is moved, not duplicated. */
+function migrateLayout() {
+  if (S.get('layout') === '3') return;
+  if (connected()) {
+    const t = new Date().toISOString();
+    const ins = db.prepare('INSERT INTO drive_queue (entry_id,attempts,next_at,queued_at) VALUES (?,0,0,?) ON CONFLICT(entry_id) DO UPDATE SET attempts=0, next_at=0, queued_at=excluded.queued_at');
+    db.transaction(() => db.prepare('SELECT entry_id FROM drive_entries WHERE entry_id IS NOT NULL AND folder_id IS NOT NULL').all().forEach((r) => ins.run(r.entry_id, t)))();
+  }
+  S.set('layout', '3');
+}
 function start() {
   if (timer) return;
+  try { migrateLayout(); } catch (err) { console.warn('[eod-log] drive layout migration failed:', err.message); }
   timer = setInterval(() => runOnce().catch(() => {}), TICK_MS); timer.unref?.();
   setTimeout(() => runOnce().catch(() => {}), 3000).unref?.();
 }
@@ -352,7 +395,7 @@ function status() {
   const lastErr = db.prepare('SELECT last_error FROM drive_queue WHERE last_error IS NOT NULL UNION ALL SELECT last_error FROM drive_entries WHERE last_error IS NOT NULL AND pending_delete=1 LIMIT 1').get();
   const rid = mode() === 'sa' ? S.get('shared_folder_id') : S.get('root_id');
   return {
-    mode: mode(), connected: connected(), auto: S.get('auto') !== '0',
+    mode: mode(), connected: connected(), auto: S.get('auto') !== '0', clientType: clientType(), calendarScope: calendarScopeOk(), link: linkState(),
     account: mode() === 'sa' ? (saKey() || {}).client_email || '' : S.get('account') || '',
     clientIdSet: Boolean(clientId()), clientId: env.GDRIVE_CLIENT_ID ? '' : S.get('client_id') || '', clientFromEnv: Boolean(env.GDRIVE_CLIENT_ID), secretSet: Boolean(clientSecret()),
     saSet: Boolean(saKey()), saEmail: (saKey() || {}).client_email || '', sharedFolderId: S.get('shared_folder_id') || '',
@@ -366,10 +409,58 @@ function status() {
   };
 }
 
-// ---------- connect (OAuth device flow; no redirect URI, works on a LAN http NAS)
+/** Common tail of both sign-in flows: keep the refresh token, learn the account, apply pending sharing. */
+async function finishConnect(j, requestedScope) {
+  const prev = S.get('account');
+  S.set('mode', 'oauth'); S.set('refresh_token', j.refresh_token); S.set('scope', j.scope || requestedScope); S.del('auth_error'); S.del('cal_scope_note');
+  tok = { access: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 };
+  let email = '';
+  try { const a = await api('GET', '/drive/v3/about?fields=user(emailAddress,displayName)'); email = (a.user && a.user.emailAddress) || ''; } catch { /* optional */ }
+  if (prev && email && prev !== email) resetMapping(); // different Google account: its own fresh folder tree
+  S.set('account', email);
+  const pend = S.get('share_pending');
+  if (pend) { try { await applySharing(pend.split(/[\s,]+/).filter(Boolean), S.get('share_role') === 'writer' ? 'writer' : 'reader'); S.del('share_pending'); } catch { /* shown as not shared; Save again */ } }
+  kick();
+}
+
+// ---------- connect, way 1 (Desktop-app client): open Google's page, approve, then paste the address the browser lands on.
+// Needed for Calendar: Google's device-code flow only allows a short list of scopes (email, openid, profile, drive.appdata, drive.file, youtube) and Calendar is not on it.
+// The redirect goes to http://127.0.0.1:9004/?code=..., which nothing listens on, so the browser shows "can't connect"; the code is in the address bar.
+let pendingLink = null; // { state, verifier, url, expires }
+function startLink() {
+  if (!clientId() || !clientSecret()) throw new DriveError('Save the OAuth Client ID and Client secret first.', 0);
+  const state = crypto.randomBytes(16).toString('hex'), verifier = crypto.randomBytes(32).toString('base64url');
+  const url = AUTH_URL + '?' + new URLSearchParams({
+    client_id: clientId(), redirect_uri: LOOPBACK, response_type: 'code', scope: `${SCOPE_USER} ${SCOPE_CAL}`, access_type: 'offline', prompt: 'consent',
+    state, code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256' });
+  pendingLink = { state, verifier, url: url.toString(), expires: Date.now() + 20 * 60000 };
+  return pendingLink;
+}
+const linkState = () => (pendingLink && Date.now() < pendingLink.expires ? { url: pendingLink.url } : null);
+function cancelLink() { pendingLink = null; }
+/** `pasted` = the whole address from the browser's address bar (or just the code). */
+async function finishLink(pasted) {
+  const p = pendingLink;
+  if (!p || Date.now() > p.expires) throw new DriveError('That sign-in link expired. Click Connect again.', 0);
+  const text = String(pasted || '').trim();
+  let code = '', state = '', error = '';
+  try { const u = new URL(text); code = u.searchParams.get('code') || ''; state = u.searchParams.get('state') || ''; error = u.searchParams.get('error') || ''; } catch {
+    const m = /[?&]code=([^&\s]+)/.exec(text); code = m ? decodeURIComponent(m[1]) : /^[\w\-./]{10,}$/.test(text) ? text : '';
+  }
+  if (error) throw new DriveError(error === 'access_denied' ? 'Access was denied on the Google page.' : 'Google said: ' + error, 0);
+  if (!code) throw new DriveError('No code found. Copy the WHOLE address from the browser (it starts with http://127.0.0.1:9004/?code=).', 0);
+  if (state && state !== p.state) throw new DriveError('That address is from an older sign-in attempt. Click Connect again and use the new window.', 0);
+  const j = await form(OAUTH + '/token', { client_id: clientId(), client_secret: clientSecret(), code, code_verifier: p.verifier, redirect_uri: LOOPBACK, grant_type: 'authorization_code' });
+  if (!j.refresh_token) throw new DriveError('Google did not return a refresh token. Remove "EOD Log" at myaccount.google.com/permissions and connect again.', 0);
+  pendingLink = null;
+  await finishConnect(j, `${SCOPE_USER} ${SCOPE_CAL}`);
+}
+
+// ---------- connect, way 2 (TVs and Limited Input client, Drive only): OAuth device flow; no redirect URI, works on a LAN http NAS)
 let pendingAuth = null; // { device_code, user_code, verification_url, expires, interval, state, error }
 async function startDevice() {
   if (!clientId() || !clientSecret()) throw new DriveError('Save the OAuth Client ID and Client secret first.', 0);
+  pendingLink = null;
   const j = await form(OAUTH + '/device/code', { client_id: clientId(), scope: SCOPE_USER });
   pendingAuth = { device_code: j.device_code, user_code: j.user_code, verification_url: j.verification_url || j.verification_uri, expires: Date.now() + (j.expires_in || 1800) * 1000, interval: Math.max(1, j.interval || 5), state: 'waiting' };
   pollDevice(pendingAuth);
@@ -383,15 +474,7 @@ async function pollDevice(p) {
     try {
       const j = await form(OAUTH + '/token', { client_id: clientId(), client_secret: clientSecret(), device_code: p.device_code, grant_type: 'urn:ietf:params:oauth:grant-type:device_code' });
       if (!j.refresh_token) { p.state = 'error'; p.error = 'Google did not return a refresh token.'; return; }
-      const prev = S.get('account');
-      S.set('mode', 'oauth'); S.set('refresh_token', j.refresh_token); S.del('auth_error');
-      tok = { access: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 };
-      let email = '';
-      try { const a = await api('GET', '/drive/v3/about?fields=user(emailAddress,displayName)'); email = (a.user && a.user.emailAddress) || ''; } catch { /* optional */ }
-      if (prev && email && prev !== email) resetMapping(); // different Google account: its own fresh folder tree
-      S.set('account', email);
-      const pend = S.get('share_pending');
-      if (pend) { try { await applySharing(pend.split(/[\s,]+/).filter(Boolean), S.get('share_role') === 'writer' ? 'writer' : 'reader'); S.del('share_pending'); } catch { /* shown as not shared; Save again */ } }
+      await finishConnect(j, SCOPE_USER);
       p.state = 'done';
       kick();
       return;
@@ -409,7 +492,7 @@ function cancelDevice() { pendingAuth = null; }
 async function disconnect() {
   const rt = S.get('refresh_token');
   if (rt) { try { await form(OAUTH + '/revoke', { token: rt }); } catch { /* already revoked */ } }
-  S.del('refresh_token'); S.del('auth_error'); resetToken(); pendingAuth = null;
+  S.del('refresh_token'); S.del('scope'); S.del('auth_error'); resetToken(); pendingAuth = null; pendingLink = null;
 }
 
 /** Test: make sure the folder is reachable and a file can be written there (then trashed). */
@@ -444,6 +527,6 @@ async function applySharing(emails, role) {
 }
 
 module.exports = {
-  S, status, connected, enabled, enqueue, enqueueAll, onDelete, resetMapping, forgetEntries, runOnce, start, startDevice, deviceState, cancelDevice, disconnect, test, applySharing,
-  resetToken, naming: { safeName, folderName, pdfName, receiptNames, yearName, monthName }, backoff, MAX_ATTEMPTS,
+  S, api, DriveError, kick, syncEntry, mode, saKey, calendarScopeOk, SCOPE_CAL, status, connected, enabled, enqueue, enqueueAll, onDelete, resetMapping, forgetEntries, runOnce, start, startDevice, deviceState, cancelDevice, disconnect, test, applySharing,
+  resetToken, migrateLayout, startLink, finishLink, cancelLink, clientType, naming: { safeName, folderName, jobFolderName, pdfName, receiptNames, yearName, monthName, dayName }, backoff, MAX_ATTEMPTS,
 };

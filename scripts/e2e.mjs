@@ -87,7 +87,7 @@ r = await req('/new', { method: 'POST', body: entryForm({ fields: { job: 'Format
   crew: [{ name: 'Secs', start: '07:30:00', stop: '18:00:00.000' }, { name: 'AmPm', start: '7:30 AM', stop: '6:00 PM' }, { name: 'OldWrap', start: '9:00', wrap: '17:30' }, { name: 'Night', start: '22:00', stop: '06:00', meals: [{ start: '02:00', end: '02:30' }] }] }) });
 const idFmt = Number(/\/e\/(\d+)/.exec(r.headers.get('location'))[1]);
 h = await text(await req(`/e/${idFmt}`));
-ok((h.match(/>10\.5 h</g) || []).length === 2 && h.includes('>8.5 h<') && h.includes('>7.5 h<') && h.includes('7:30am') && h.includes('6:00pm'), 'times with seconds / AM-PM / old "wrap" / overnight all saved (10.5, 10.5, 8.5, 7.5 h)');
+ok((h.match(/>10\.5 h</g) || []).length >= 2 && h.includes('>8.5 h<') && h.includes('>7.5 h<') && h.includes('7:30am') && h.includes('6:00pm'), 'times with seconds / AM-PM / old "wrap" / overnight all saved (10.5, 10.5, 8.5, 7.5 h)');
 r = await req('/new', { method: 'POST', body: entryForm({ fields: { job: 'Nameless', date: today }, crew: [{ name: '', start: '08:00', stop: '17:00' }] }) });
 h = await text(r); ok(r.status === 400 && h.includes('has times but no name'), 'crew row with times but no name is refused, not silently dropped');
 r = await req('/new', { method: 'POST', body: entryForm({ fields: { job: 'NoMeal', date: today }, crew: [{ name: 'A', start: '08:00', stop: '16:00', meals: [{ start: '', end: '' }] }] }) });
@@ -98,7 +98,8 @@ h = await text(await req(`/e/${idNoMeal}`)); ok(h.includes('>8 h<') && !/<dt>Mea
 r = await req(`/e/${id1}`); h = await text(r);
 ok(h.includes('Acme Spring Promo') && h.includes('Maria Lopez') && h.includes('Dev Patel'), 'detail shows crew');
 ok((h.match(/>10 h</g) || []).length >= 2 && h.includes('5.5 h') && h.includes('25.5 h total'), 'detail: separate hours 10 / 10 / 5.5 (travel times ignored, meals deducted)');
-ok(h.includes('On-site hours') && h.includes('11.5 h'), 'detail: secondary on-site hours (7:15 to 6:45pm = 11.5 h)');
+ok(h.includes('On set hours') && h.includes('>11 h<') && h.includes('Total hours'), 'detail: on set hours (7:15am to 6:45pm = 11.5 h, minus the 30 min meal inside = 11 h) next to total hours');
+ok(/Crew &amp; hours <span class="muted">25\.5 h total · 11 h on set/.test(h), 'detail: entry totals show total hours and on set hours');
 const rid = Number(/\/r\/(\d+)/.exec(h)[1]);
 ok(/<img src="\/r\/\d+"/.test(h) && />PDF</.test(h), 'detail shows image thumbnail and PDF receipt');
 r = await req(`/r/${rid}`); ok(r.status === 200 && /image\/jpeg/.test(r.headers.get('content-type')), 'receipt image served to signed-in user');
@@ -180,7 +181,7 @@ if (MAILPIT) {
 }
 
 // Google Drive (against the fake Google server)
-let driveFilesBeforeClear = 0;
+let driveFilesBeforeClear = 0, calEventsBeforeClear = 0;
 if (GMOCK) {
   const gm = async (p, method = 'POST') => (await fetch(GMOCK + p, { method })).json();
   const tree = (st) => { const by = Object.fromEntries(st.files.map((f) => [f.id, f])); const full = (f) => (f.parents && by[f.parents[0]] ? full(by[f.parents[0]]) + '/' : '') + f.name; return st.files.filter((f) => !f.inTrash).map(full).sort(); };
@@ -188,8 +189,8 @@ if (GMOCK) {
   await gm('/mock/reset');
   await req('/login', { who: 'team2', method: 'POST', body: new URLSearchParams({ name: 'Crew', password: process.env.APP_PASSWORD }) });
   r = await req('/settings/drive', { who: 'team2' }); ok(r.status === 303 && /admin-login/.test(r.headers.get('location')), 'non-admin cannot open Drive settings');
-  h = await text(await req('/settings/drive')); ok(h.includes('Not connected') && h.includes('TVs and Limited Input devices'), 'Drive page: not connected, asks for an OAuth client');
-  r = await req('/settings/drive/save', { method: 'POST', body: new URLSearchParams({ mode: 'oauth', client_id: 'test-client.apps.googleusercontent.com', client_secret: 'test-secret', root_name: 'KPI EOD Log', auto: '1', on_delete: 'mark', share: 'producer@kpi.example', share_role: 'reader' }) });
+  h = await text(await req('/settings/drive')); ok(h.includes('Not connected') && h.includes('TVs and Limited Input devices') && h.includes('Desktop app'), 'Drive page: not connected, asks for an OAuth client (Desktop app or TV type)');
+  r = await req('/settings/drive/save', { method: 'POST', body: new URLSearchParams({ mode: 'oauth', client_type: 'tv', client_id: 'test-client.apps.googleusercontent.com', client_secret: 'test-secret', root_name: 'KPI EOD Log', auto: '1', on_delete: 'mark', share: 'producer@kpi.example', share_role: 'reader' }) });
   ok(r.status === 303 && /after%20you%20connect/.test(r.headers.get('location')), 'save OAuth client (sharing deferred until connected)');
   h = await text(await req('/settings/drive')); ok(!h.includes('test-secret') && h.includes('saved: leave blank to keep') && h.includes('Connect Google Drive'), 'client secret is never shown back');
   r = await req('/settings/drive/connect', { method: 'POST' }); ok(r.status === 303, 'start device sign-in');
@@ -205,8 +206,11 @@ if (GMOCK) {
   r = await req('/settings/drive/sync-all', { method: 'POST' }); ok(r.status === 303 && /Queued%20\d+/.test(r.headers.get('location')), 'Sync all queues existing EODs');
   ok(await waitFor(async () => (await (await req('/settings/drive/status.json')).json()).pending === 0), 'queue drains');
   st = await gm('/mock/state', 'GET'); let tr = tree(st);
-  const acme = tr.find((x) => x.endsWith(`${d1} Acme Spring Promo (Film shoot)`));
-  ok(acme && acme.startsWith(`KPI EOD Log/${d1.slice(0, 4)}/${d1.slice(0, 7)} `), `entry folder organized by year/month: ${acme}`);
+  const acme = tr.find((x) => x.endsWith('/Acme Spring Promo (Film shoot)'));
+  const monthN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][Number(d1.slice(5, 7)) - 1];
+  ok(acme === `KPI EOD Log/${d1.slice(0, 4)}/${d1.slice(5, 7)} ${monthN}/${d1}/Acme Spring Promo (Film shoot)`, `entry folder is year / month / day / job: ${acme}`);
+  const eodPdfs = tr.filter((x) => /\/EOD [^/]+\.pdf$/.test(x));
+  ok(eodPdfs.length >= 2 && eodPdfs.every((x) => /\/\d{4}-\d{2}-\d{2}\/[^/]+ \([^/]+\)\/EOD [^/]+\.pdf$/.test(x)), `every EOD PDF sits in its own <day>/<Job (Type)> folder (${eodPdfs.length} PDFs)`);
   ok(tr.some((x) => x.startsWith(acme + '/EOD ') && x.endsWith('.pdf')) && tr.filter((x) => x.startsWith(acme + '/') && x.includes(' - ')).length >= 2, 'entry PDF and receipts uploaded');
   ok(tr.some((x) => x.startsWith(acme + '/') && x.includes('Gas for Sprinter - $63.65 (Personal)')), 'receipt named with expense, amount and who paid');
   r = await req('/settings/drive/test', { method: 'POST' }); ok(/Test%20passed/.test(r.headers.get('location')), 'Test button passes');
@@ -217,10 +221,59 @@ if (GMOCK) {
   ok(r.status === 303, 'saving an EOD does not wait for Drive (even while Drive fails)');
   ok(await waitFor(async () => tree(await gm('/mock/state', 'GET')).some((x) => x.endsWith('Drive retry check (AV install)')), 20000), 'new EOD reaches Drive after a retry');
   r = await req(`/e/${idDrive}/delete`, { method: 'POST' });
-  ok(await waitFor(async () => tree(await gm('/mock/state', 'GET')).some((x) => x.endsWith('(deleted) ' + today + ' Drive retry check (AV install)'))), 'deleted EOD: Drive folder kept, renamed "(deleted)"');
+  ok(await waitFor(async () => tree(await gm('/mock/state', 'GET')).some((x) => x.endsWith('/(deleted) Drive retry check (AV install)'))), 'deleted EOD: Drive folder kept, renamed "(deleted)"');
   h = await text(await req('/settings')); ok(h.includes('Google Drive') && h.includes('jason@kpi.example'), 'Settings shows the Drive status');
-  driveFilesBeforeClear = (await gm('/mock/state', 'GET')).files.filter((f) => !f.inTrash).length;
   h = await text(await req('/settings/clear')); ok(h.includes('Google Drive are <b>not</b> deleted'), 'clear page says Drive copies are kept');
+
+  // ---- Google Calendar
+  const CAL = 'https://www.googleapis.com/auth/calendar';
+  h = await text(await req('/settings')); ok(h.includes('Google Calendar') && h.includes('href="/settings/calendar"'), 'Settings has a Google Calendar card');
+  r = await req('/settings/calendar', { who: 'team2' }); ok(r.status === 303 && /admin-login/.test(r.headers.get('location')), 'non-admin cannot open Calendar settings');
+  r = await req('/settings/calendar/save', { method: 'POST', body: new URLSearchParams({ cal_on: '1', cal_mode: 'auto', cal_name: 'KPI EODs', cal_paste_id: '' }) });
+  ok(/Reconnect%20to%20enable%20Calendar/.test(r.headers.get('location')) || /Calendar%20is%20on/.test(r.headers.get('location')), 'Calendar on with a Drive-only (TV client) sign-in warns');
+  h = await text(await req('/settings/calendar')); ok(h.includes('Reconnect to enable Calendar') && h.includes('Desktop app'), 'calendar page: "Reconnect to enable Calendar" notice (TV sign-in cannot have Calendar)');
+  h = await text(await req('/settings/drive')); ok(h.includes('Reconnect to enable Calendar'), 'Drive page shows the same notice');
+  h = await text(await req('/settings')); ok(h.includes('Reconnect to enable Calendar'), 'Settings card shows the notice');
+  r = await req('/settings/calendar/sync-all', { method: 'POST' }); ok(/Reconnect%20to%20enable%20Calendar/.test(r.headers.get('location')), 'Sync all to Calendar refused until reconnected');
+  r = await req('/settings/calendar/test', { method: 'POST' }); ok(/Test%20failed.*Reconnect/.test(r.headers.get('location')), 'Test says to reconnect');
+  ok(!((await gm('/mock/state', 'GET')).calls.some((c) => c.includes('/calendar/'))), 'no Calendar API calls were made without the scope');
+  // switch to a Desktop-app client and connect by pasting the address
+  r = await req('/settings/drive/save', { method: 'POST', body: new URLSearchParams({ mode: 'oauth', client_type: 'desktop', root_name: 'KPI EOD Log', auto: '1', on_delete: 'mark', share: '', share_role: 'reader' }) });
+  r = await req('/settings/drive/connect', { method: 'POST' }); ok(r.status === 303, 'start the paste-the-address sign-in');
+  h = await text(await req('/settings/drive'));
+  const authUrl = /href="(https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?[^"]+)"/.exec(h);
+  ok(authUrl, 'page shows the Open the Google sign-in link');
+  const q = new URL(authUrl[1].replace(/&amp;/g, '&')).searchParams;
+  ok(q.get('scope').split(' ').includes(CAL) && q.get('scope').includes('drive.file') && q.get('redirect_uri') === 'http://127.0.0.1:9004' && q.get('code_challenge_method') === 'S256', 'sign-in asks for Drive + Calendar, loopback redirect, PKCE');
+  await gm('/mock/code-reset');
+  r = await req('/settings/drive/connect-link/finish', { method: 'POST', body: new URLSearchParams({ pasted: 'http://127.0.0.1:9004/?state=bogus&code=MOCKCODE' }) }); ok(/err=/.test(r.headers.get('location')), 'a pasted address with the wrong state is refused');
+  r = await req('/settings/drive/connect-link/finish', { method: 'POST', body: new URLSearchParams({ pasted: `http://127.0.0.1:9004/?state=${q.get('state')}&code=MOCKCODE&scope=x` }) }); ok(/msg=Connected/.test(r.headers.get('location')), 'pasting the address connects Drive + Calendar');
+  h = await text(await req('/settings/calendar')); ok(!h.includes('Reconnect to enable Calendar') && h.includes('<h2>On</h2>'), 'notice gone, Calendar is on');
+  // events: one per EOD, PDF attached
+  const nEntries = Number(/(\d+)<\/b> of (\d+) EODs? in Drive/.exec(await text(await req('/settings/drive')))?.[2] || 0);
+  r = await req('/settings/calendar/test', { method: 'POST' }); ok(/Test%20passed/.test(r.headers.get('location')), 'Calendar Test button passes (creates + removes a test event)');
+  r = await req('/settings/calendar/sync-all', { method: 'POST' }); ok(/Queued%20\d+/.test(r.headers.get('location')), 'Sync all to Calendar queues the EODs');
+  const calEvents = async () => (await gm('/mock/state', 'GET')).events.filter((x) => x.status !== 'cancelled');
+  ok(await waitFor(async () => (await calEvents()).length === nEntries && (await (await req('/settings/calendar')).text()).includes(`<b>${nEntries}</b> of ${nEntries}`), 25000), `one event per EOD on the calendar (${nEntries})`);
+  st = await gm('/mock/state', 'GET');
+  ok(st.cals.length === 1 && st.cals[0].summary === 'KPI EODs', 'the app created its own "KPI EODs" calendar (once)');
+  const evAcme = st.events.find((x) => x.summary === 'Acme Spring Promo (Film shoot) – EOD');
+  const pdfAcme = st.files.find((f) => f.name === 'EOD ' + d1 + ' Acme Spring Promo.pdf');
+  ok(evAcme && pdfAcme && evAcme.attachments[0].fileId === pdfAcme.id && evAcme.attachments[0].mimeType === 'application/pdf', 'event title "<Job> (<Type>) – EOD" with the EOD PDF from Drive attached');
+  ok(evAcme.start.dateTime === d1 + 'T07:30:00' && evAcme.end.dateTime === d1 + 'T18:00:00' && evAcme.start.timeZone === 'America/New_York', 'event runs from the earliest start to the latest stop in the entry time zone');
+  ok(/Total hours: 27\.5 h · On set hours: 11 h/.test(evAcme.description) && evAcme.description.includes('Maria Lopez') && evAcme.description.includes('$88.64') && evAcme.description.includes(`/e/${id1}`) && evAcme.source && evAcme.source.url.endsWith(`/e/${id1}`), 'description has crew, total + on set hours, expenses and a link back to the entry');
+  // a new EOD gets its event by itself; edits patch the same event; delete follows the Drive setting
+  r = await req('/new', { method: 'POST', body: entryForm({ fields: { job: 'Calendar check', date: today, job_type: 'Live event' }, crew: [{ name: 'Jason', start: '09:00', stop: '13:00' }] }) });
+  const idCal = Number(/\/e\/(\d+)/.exec(r.headers.get('location'))[1]);
+  ok(await waitFor(async () => (await calEvents()).some((x) => x.summary === 'Calendar check (Live event) – EOD'), 20000), 'new EOD reaches the calendar by itself');
+  const evC = (await calEvents()).find((x) => x.summary === 'Calendar check (Live event) – EOD');
+  r = await req(`/e/${idCal}/edit`, { method: 'POST', body: entryForm({ fields: { job: 'Calendar check', date: today, job_type: 'Live event', notes: 'Edited for calendar' }, crew: [{ name: 'Jason', start: '09:00', stop: '14:30' }] }) });
+  ok(await waitFor(async () => { const e2 = (await calEvents()).filter((x) => x.summary === 'Calendar check (Live event) – EOD'); return e2.length === 1 && e2[0].id === evC.id && e2[0].end.dateTime === today + 'T14:30:00' && e2[0].description.includes('Edited for calendar'); }, 20000), 'editing the EOD updates the same event (no duplicate)');
+  r = await req(`/e/${idCal}/delete`, { method: 'POST' });
+  ok(await waitFor(async () => (await calEvents()).some((x) => x.id === evC.id && x.summary === '(deleted) Calendar check (Live event) – EOD'), 20000), 'deleting the EOD marks its event "(deleted) ..." (same as the Drive setting)');
+  h = await text(await req('/settings')); ok(h.includes('KPI EODs') && h.includes('waiting') || h.includes('All caught up'), 'Settings card shows Calendar status');
+  calEventsBeforeClear = (await calEvents()).length;
+  driveFilesBeforeClear = (await gm('/mock/state', 'GET')).files.filter((f) => !f.inTrash).length;
 }
 
 // danger zone: clear all data
@@ -264,6 +317,7 @@ if (GMOCK) {
     const left = (await (await fetch(GMOCK + '/mock/state')).json()).files.filter((f) => !f.inTrash).length;
     ok(left === driveFilesBeforeClear, `Clear all data leaves Google Drive alone (${left} files)`);
     h = await text(await req('/settings/drive')); ok(h.includes('Connected'), 'Drive stays connected after clearing everything');
+    ok((await (await fetch(GMOCK + '/mock/state')).json()).events.filter((x) => x.status !== 'cancelled').length === calEventsBeforeClear, 'Clear all data leaves Google Calendar events alone');
   }
 }
 

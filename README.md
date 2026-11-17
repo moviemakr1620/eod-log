@@ -6,7 +6,7 @@ everything is stored in a local SQLite database on the NAS, and managers get **s
 
 Built for film shoots, AV installs and live events. Mobile first: big tap targets, the phone's own date and time pickers, a floating **+ New EOD** button, add-to-home-screen (PWA).
 
-**Status:** v2: start/stop hours, multiple notification schedules, and the time-saving fix. Tested in Docker with a fake mail server and in emulated iPhone/Android browsers (see "Testing"). No real email has been sent by the developer.
+**Status:** v3: always-visible Start/Stop and On set times with live total and on-set hours, a year/month/day/job Drive layout, and an optional Google Calendar event per EOD. Tested in Docker with a fake mail server and a fake Google (Drive and Calendar), and in emulated iPhone/Android browsers (see "Testing"). **Not yet tried against real Google or a real mail server.**
 
 | Week view | New EOD | Entry with receipt | Notifications | Summary email |
 |---|---|---|---|---|
@@ -15,10 +15,10 @@ Built for film shoots, AV installs and live events. Mobile first: big tap target
 ## What it does
 
 - **+ New EOD** (floating button on phones): job / project, date, job type (Film shoot, AV install, Live event, Edit / DIT, Other).
-- **Crew & hours, per person.** Each person gets their own **Start** and **Stop**, and that's what makes the hours. Meal breaks are off by default: tap **+ Add meal break** for anyone who took one.
-  Site time works the same way: **+ Add site time** reveals **On site** and **Off site** for that person (shown as a secondary on-site hours figure; it never changes the hours). A **More** fold-out holds role, Edit/DIT hours, a note, and "hours, if not using start/stop" for someone who just knows their total.
+- **Crew & hours, per person.** Every crew row always shows **Start / Stop** (shop time, what you're paid for) and **On set start / On set end** (time on the site). Nothing is hidden behind a button, except meal breaks: they are off by default, tap **+ Add meal break** for anyone who took one. A **More** fold-out holds role, Edit/DIT hours, a note, and "total hours, if not using start/stop" for someone who just knows their total.
+  Under each person the app shows, live as you type, **On set hours** and **Total hours**, and the entry shows both as totals (see "How hours are counted").
   On phones and tablets the time fields use the native time picker. On desktop they are plain text fields: type `7`, `730`, `7:30p` or `19:30` (or pick from the 15-minute list) and it tidies to e.g. `7:30 PM` when you leave the field. A half-typed or unreadable time is outlined in red and the EOD will not save until it is fixed, so nothing is silently dropped.
-  Hours are worked out live as you type. **Add crew** starts the new person with the first person's times, and **Copy times to everyone** syncs them.
+  **Add crew** starts the new person with the first person's times, and **Copy times to everyone** syncs them.
 - **The rest of the old email** sits in fold-away sections so the quick path stays short: client, location, crew chief, time zone; expenses and receipts; vehicle, miles and tolls; # media taken and used; equipment requested by the client and equipment taken, provided and used; issues and damage; notes.
 - **Expenses**: one line per receipt with amount, category, who paid, and **Company card** or **Personal (reimburse)**. Each line takes photos (camera or library) or PDFs. Big phone photos are shrunk in the browser to about 2000 px JPEG before upload, so uploads are fast and the NAS stays small.
 - **Remembers**: crew names, projects, clients, locations, vehicles and roles autocomplete from past entries. **Duplicate for another day** copies a job and its crew for multi-day jobs. Unsaved new entries are kept as a draft on the phone (photos excepted).
@@ -26,19 +26,24 @@ Built for film shoots, AV installs and live events. Mobile first: big tap target
 - **List view**: search (job, client, location, crew, notes) and filters (job type, person, date range), as cards.
 - **Entry page**: every time per person, receipts as thumbnails, plus Edit, Duplicate and Delete (admin).
 - **Email notifications** (Settings, admin): add as many as you want. Each has a name, its own recipients, **how often** (every day, weekdays, or weekly on a chosen day), the send time and time zone, an on/off switch, and an option to attach receipts.
-  Each email has totals, hours by person (with Edit/DIT and the amount to reimburse), jobs, every EOD with a link, and an expense list that flags missing receipts.
+  Each email has totals, total and on-set hours by person (with Edit/DIT and the amount to reimburse), jobs, every EOD with a link, and an expense list that flags missing receipts.
   **If there are no EODs in the period, nothing is sent**; it's logged as *skipped*. Each notification has **Preview** and **Send test**, and Settings shows a notification log. The preview has a **Back** button pinned to the top (it returns to Settings or the notification you came from); it is never part of the email itself.
-- **Google Drive copy** (Settings → Google Drive, admin): every EOD is uploaded to an organized, shareable Drive folder: a PDF of the day plus each receipt, named by date, job, expense and amount. Runs in the background with retries; saving an EOD never waits for Drive. See [Google Drive setup](#google-drive-setup).
-- **CSV export** of hours (one row per person per day) and expenses, for payroll or spreadsheets.
+- **Google Drive copy** (Settings → Google Drive, admin): every EOD is uploaded to an organized, shareable Drive folder: a PDF of the day plus each receipt, in a folder per job per day, named by date, job, expense and amount. Runs in the background with retries; saving an EOD never waits for Drive. See [Google Drive setup](#google-drive-setup).
+- **Google Calendar** (Settings → Google Calendar, admin, optional): one event per EOD on its own calendar, with the crew, hours and expenses in the description and the EOD PDF attached. See [Google Calendar setup](#google-calendar-setup).
+- **CSV export** of hours (one row per person per day, with `total_hours` and `on_set_hours` columns) and expenses, for payroll or spreadsheets.
 - **Clear all data (admin only).** Settings → *Danger zone* → **Clear all data…** shows how many EODs, receipts and MB will go, links the CSV exports, and needs you to type `DELETE` plus the admin password. By default it deletes all EODs, expenses, receipts and uploaded files and keeps notifications; you can also choose to reset notifications, settings and the log. Before clearing it saves a database copy to `/data/backups/` (last 3 kept; receipt files are not included), then compacts the database.
 
 ### How hours are counted
 
-- **Hours = Stop − Start − any meal breaks entered.** No meal entered = nothing deducted.
-- Stop earlier than Start counts as past midnight (6pm to 2am = 8 h).
-- On site / Off site are for the record only and **never change hours**. When On site and Off site are both filled in, the entry also shows **on-site hours**.
-- If "hours, if not using times" is filled in, it wins.
+Each person has two separate numbers, both worked out live and shown everywhere hours appear (entry page, week totals, summary email, CSV, Drive PDF, Calendar):
+
+- **Total hours = Stop − Start − meal breaks.** No meal entered = nothing deducted.
+- **On set hours = On set end − On set start − the part of any meal break that falls inside that window.** A meal at 12:00-12:30 inside a 7:30-4:30 on-set day comes off; a meal taken outside the on-set window doesn't.
+- Past midnight works for both: Stop (or On set end) earlier than its start counts as the next day (6pm to 2am = 8 h).
+- If either On set time is missing, on-set hours are blank (the form says what to add); total hours still work.
+- If "total hours, if not using times" is filled in, it wins for total hours.
 - Edit/DIT hours are tracked separately and shown next to the hours, not added to them.
+- Entries saved before this version are converted automatically on start-up: their old *On site / Off site* times became On set start / end and everything is recalculated. Nothing is lost.
 
 Want a different rule? It's one function: `public/hours.js` (shared by the browser and the server, with tests in `test/hours.test.js`).
 
@@ -170,22 +175,28 @@ Because the repo is private, pick one:
 
 ## Google Drive setup
 
-| ![drive setup](preview/11-drive-setup.png) | ![drive code](preview/12-drive-code.png) | ![drive connected](preview/13-drive-connected.png) | ![EOD PDF](preview/14-drive-eod-pdf.png) |
-|---|---|---|---|
+| ![drive setup](preview/11-drive-setup.png) | ![connect](preview/12-drive-connect-paste.png) | ![drive connected](preview/13-drive-connected.png) | ![folder layout](preview/16-drive-tree.png) | ![EOD PDF](preview/14-drive-eod-pdf.png) |
+|---|---|---|---|---|
 
 EOD Log can copy every EOD into Google Drive. Layout:
 
 ```
 EOD Log/                                   <- the app creates this; share it from Drive or from the app
-  2026/
-    2026-11 November/
-      2026-11-13 Villanova promo (Film shoot)/
-        EOD 2026-11-13 Villanova promo.pdf                          <- every field, hours per person, expenses
-        2026-11-13 Villanova promo - Lunch for crew - $86.40 (Personal).jpg
-        2026-11-13 Villanova promo - Gas - $63.65 (Card) 1.jpg
-        2026-11-13 Villanova promo - Gas - $63.65 (Card) 2.pdf
+  2026/                                    <- year
+    11 November/                           <- month (number first, so it sorts)
+      2026-11-13/                          <- day
+        Villanova promo (Film shoot)/      <- one folder per job (Job name (Type))
+          EOD 2026-11-13 Villanova promo.pdf                          <- every field, hours per person, expenses
+          2026-11-13 Villanova promo - Lunch for crew - $86.40 (Personal).jpg
+          2026-11-13 Villanova promo - Gas - $63.65 (Card) 1.jpg
+          2026-11-13 Villanova promo - Gas - $63.65 (Card) 2.pdf
+        Brooklyn AV install (AV install)/
+          EOD 2026-11-13 Brooklyn AV install.pdf
+          ...
 ```
 
+- Each job gets its own folder holding that job's PDF and receipts. Two EODs for the same job on the same day get `#2` on the second folder.
+- **Upgrading:** the first start after the update moves every EOD already in Drive to this layout on the next sync. Folders are moved or renamed, never copied, so nothing is duplicated and sharing stays as it was. The old `2026-11 November` folder is renamed in place to `11 November`.
 - New EODs upload automatically. Editing one replaces the PDF in place (Drive keeps the old versions), renames or moves the folder if the job or date changed, uploads new receipts and trashes removed ones.
 - Deleting an EOD in the app renames its Drive folder to `(deleted) …` (or moves it to the trash, if you pick that).
 - **Clear all data never deletes anything in Drive.**
@@ -194,21 +205,31 @@ EOD Log/                                   <- the app creates this; share it fro
 
 ### Option A: a Google account (recommended, works with any Google or Workspace account)
 
-The app signs in as one Google account and creates the folder in that account's My Drive, using that account's storage. It uses Google's sign-in for TVs and other devices: the app shows a code and you approve it on your phone. That means it works on a NAS reached over plain `http://` on the LAN, with no redirect URL or domain needed. It only asks for **`drive.file`** access: it can see and change only the files it created, nothing else in the Drive.
+The app signs in as one Google account and creates the folder in that account's My Drive, using that account's storage. It asks for **`drive.file`** (it can see and change only the files it created, nothing else in the Drive) and, if you use the Calendar feature, **`calendar`**.
+
+**Which OAuth client type?** Google's "TVs and Limited Input devices" sign-in (the code you type on google.com/device) is the easiest, but Google does **not** allow Calendar access for that type: it only allows Drive's `drive.file`, `drive.appdata` and a few profile/YouTube scopes. So:
+
+- **Desktop app client (recommended; Drive and Calendar).** The connect step shows a Google link; you sign in, Google then sends you to a "This site can't be reached" page (`http://127.0.0.1:9004/...`), and you copy that page's address into the app. That is normal: it is how a NAS on plain `http://` can sign in without a domain or redirect URL.
+- **TVs and Limited Input devices client (Drive only).** Works as before: the app shows a code and you approve it on google.com/device. Calendar will say "Reconnect to enable Calendar" until you switch to a Desktop app client.
 
 One-time setup in Google Cloud (about 5 minutes, free):
 
 1. Go to <https://console.cloud.google.com/> signed in with the company Google account. Use the project picker at the top: **New project**, name it `EOD Log`, then **Create** and select it.
-2. **APIs & Services → Library**: search for **Google Drive API**, open it, click **Enable**.
+2. **APIs & Services → Library**: search for **Google Drive API**, open it, click **Enable**. Do the same for **Google Calendar API** if you want the Calendar feature.
 3. **APIs & Services → OAuth consent screen** (opens **Google Auth Platform**). Click **Get started**:
    - App name `EOD Log`, support email: yours.
    - **Audience: Internal** if this is a Google Workspace account (only your company can use it, no review needed, sign-in never expires).
-   - For a personal @gmail.com account pick **External**. Then under **Audience** click **Publish app** (to "In production"), or the sign-in expires after 7 days. `drive.file` needs no Google review.
+   - For a personal @gmail.com account pick **External**. Then under **Audience** click **Publish app** (to "In production"), or the sign-in expires after 7 days. `drive.file` needs no Google review. `calendar` is a *sensitive* scope: for a private app used by you, Google shows an "unverified app" warning at sign-in (**Advanced → Go to EOD Log (unsafe)**); that is expected and fine for your own app. A private app with fewer than 100 users does not need Google's review.
    - Contact email: yours. Agree and **Create**.
-4. **Clients** (or **APIs & Services → Credentials → Create credentials → OAuth client ID**): Application type **TVs and Limited Input devices**, name `EOD Log NAS`, **Create**. Copy the **Client ID** and **Client secret**.
-5. In EOD Log: **Settings → Google Drive**. Paste the Client ID and secret, set the folder name if you like, then **Save**. (Or set `GDRIVE_CLIENT_ID` / `GDRIVE_CLIENT_SECRET` in the container environment.)
-6. Click **Connect Google Drive**. Open **google.com/device** on your phone, enter the code shown, pick the company account and **Allow**. The page switches to *Connected* by itself.
-7. Click **Sync all EODs** to upload the existing ones, then **Open "EOD Log" in Google Drive**. Share it with the team there, or list emails under "Share the folder with".
+4. **Clients** (or **APIs & Services → Credentials → Create credentials → OAuth client ID**): Application type **Desktop app** (recommended) or **TVs and Limited Input devices** (Drive only). Name `EOD Log NAS`, **Create**. Copy the **Client ID** and **Client secret**.
+   (If the app asks for scopes under **Data Access**, add `.../auth/drive.file` and `.../auth/calendar`. Internal apps don't need this.)
+5. In EOD Log: **Settings → Google Drive**. Pick the client type that matches step 4, paste the Client ID and secret, set the folder name if you like, then **Save**. (Or set `GDRIVE_CLIENT_ID` / `GDRIVE_CLIENT_SECRET` and `GDRIVE_CLIENT_TYPE` in the container environment.)
+6. Click **Connect Google (Drive + Calendar)**.
+   - *Desktop app:* open the link, pick the company account, tick every permission box (including Calendar), **Continue**. The next page says "This site can't be reached"; copy the **whole address** from the address bar, paste it into the box in EOD Log and click **Finish connecting**. (Do this within 20 minutes; each link works once.)
+   - *TVs client:* open **google.com/device** on your phone, enter the code, pick the account and **Allow**. The page switches to *Connected* by itself.
+7. Click **Sync all EODs** to upload the existing ones (they are moved into the new folder layout), then **Open "EOD Log" in Google Drive**. Share it with the team there, or list emails under "Share the folder with".
+
+**Already connected before Calendar existed?** The old sign-in only covers Drive. Switch the client type to **Desktop app** (a new client from step 4), then **Reconnect Google** and keep the Calendar box ticked.
 
 The sign-in (a refresh token) is stored in the app's database on the `/data` volume. It is never shown or logged. **Disconnect** revokes it. Note that the database backups made by "Clear all data" contain it too, and are readable only by the container user.
 
@@ -216,10 +237,45 @@ The sign-in (a refresh token) is stored in the app's database on the `/data` vol
 
 Use this if you'd rather the files belong to a Shared Drive than to one person. A service account has **no storage of its own**, so it can't upload into anyone's My Drive, even a folder shared with it (Google answers `storageQuotaExceeded`). It works only inside a **Shared Drive**.
 
-1. In the same Google Cloud project, with the Drive API enabled: **IAM & Admin → Service accounts → Create service account** (name `eod-log`), **Done**.
+1. In the same Google Cloud project, with the Drive API (and the Calendar API, for Calendar) enabled: **IAM & Admin → Service accounts → Create service account** (name `eod-log`), **Done**.
 2. Open it → **Keys → Add key → Create new key → JSON**. A `.json` file downloads; keep it private.
 3. In Google Drive, open (or create) a **Shared Drive**, then **Manage members**. Add the service account's email (`eod-log@<project>.iam.gserviceaccount.com`) as **Content manager**. Make a folder in it for EODs and copy its link.
 4. In EOD Log, **Settings → Google Drive**: choose **A service account + a Shared Drive**, paste the whole JSON key and the folder link, then **Save** and **Test**. (Or put the key file in `/data` and set `GDRIVE_SA_FILE=/data/sa.json`.) Some organizations block service-account keys by policy (`iam.disableServiceAccountKeyCreation`); then use Option A.
+5. For Calendar in this mode, see below: a service account has no calendar of its own, so you share one with it.
+
+## Google Calendar setup
+
+| ![calendar settings](preview/17-calendar-settings.png) | ![calendar on](preview/18-calendar-on.png) | ![settings](preview/19-settings-with-calendar-full.png) |
+|---|---|---|
+
+Optional. Every EOD becomes **one event** on a dedicated calendar (not your personal one, so it's easy to share or hide):
+
+- **Title:** `<Job> (<Type>) – EOD`, e.g. `Villanova commencement promo (Film shoot) – EOD`.
+- **Time:** from the earliest crew Start to the latest Stop on the EOD's date (past midnight is handled). If nobody has times it is an all-day event.
+- **Description:** client, location and crew chief; each person's times, meals, on-set hours and total hours; totals (total hours, on-set hours); expenses with who paid; vehicle and miles; media; notes; and a link back to the EOD in this app (uses `PUBLIC_URL`, so set it to the address people really use).
+- **Attachment:** the EOD PDF from Drive. People need access to the Drive file to open it, so share the Drive folder and the calendar with the same people.
+- Editing an EOD updates the same event. Deleting one removes the event, or titles it `(deleted) …`, to match what you chose for Drive. If someone deletes the event by hand, the next sync recreates it. **Clear all data never touches the calendar.**
+- It runs in the background after the PDF is uploaded, with the same retry queue as Drive (the Calendar feature needs Drive switched on).
+
+**OAuth mode (Option A)**
+
+1. Enable the **Google Calendar API** in the same Cloud project (Library → Google Calendar API → Enable).
+2. Use a **Desktop app** OAuth client and connect with Calendar ticked (steps 4 to 6 above). If you were already connected, click **Reconnect Google**.
+3. **Settings → Google Calendar:** tick **Put every EOD on a Google Calendar**, leave **Let the app create its own calendar** selected, change the name if you like (default `EOD Log`), **Save**. The calendar appears in that Google account's calendar list on first use.
+4. Click **Test** (creates and removes a check event), then **Sync all to Calendar** for existing EODs.
+5. To use the calendar from other accounts, in Google Calendar open the `EOD Log` calendar's **Settings and sharing → Share with specific people** (or **Subscribe** from their side), or, to use a calendar you already have, choose **Use a calendar I already have** and paste its ID (calendar's ⋮ → **Settings and sharing → Integrate calendar → Calendar ID**).
+
+**Service account mode (Option B)**
+
+A service account can't create a calendar you can see, so you create one and share it:
+
+1. Enable the **Google Calendar API** in the Cloud project that owns the service account.
+2. In **Google Calendar** (as a person), create a calendar: **Other calendars → + → Create new calendar**, name it `EOD Log`.
+3. Open that calendar's **Settings and sharing → Share with specific people → Add people**, enter the service account's email (`eod-log@<project>.iam.gserviceaccount.com`) and set the permission to **Make changes to events**. Save.
+4. Same page, **Integrate calendar**: copy the **Calendar ID** (it looks like `abc123…@group.calendar.google.com`).
+5. **Settings → Google Calendar** in EOD Log: tick the feature on, paste the Calendar ID (required in this mode), **Save**, **Test**, then **Sync all to Calendar**. Share the calendar with your team from the same Google Calendar sharing page.
+
+If Settings shows **Reconnect to enable Calendar**, the saved Google sign-in doesn't include Calendar. If it says the calendar can't be reached, the Calendar API isn't enabled yet or (service account) the calendar isn't shared with the service account's email with "Make changes to events".
 
 ## Environment variables (every one)
 
@@ -249,7 +305,8 @@ Use this if you'd rather the files belong to a Shared Drive than to one person. 
 | `COOKIE_SECURE` | `auto` | `auto` = Secure cookie when reached over https. |
 | `TRUST_PROXY` | `loopback, linklocal, uniquelocal` | Which proxies' `X-Forwarded-*` headers to trust (NPM on the LAN is covered). |
 | `ALLOW_NO_PASSWORD` | `false` | `true` turns off sign-in entirely. Not recommended. |
-| `GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET` | empty | Google OAuth client (type TVs and Limited Input devices) for the Drive copy. Can be pasted in Settings instead. |
+| `GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET` | empty | Google OAuth client for the Drive and Calendar copy. Can be pasted in Settings instead. |
+| `GDRIVE_CLIENT_TYPE` | Settings value, else `desktop` (`tv` if a client ID was already saved) | `desktop` = Desktop app client (Drive + Calendar, paste-the-address sign-in). `tv` = TVs and Limited Input devices client (Drive only, code sign-in). |
 | `GDRIVE_SA_FILE` | empty | Path inside the container to a service account `.json` (Shared Drive mode). Can be pasted in Settings instead. |
 | `PORT`, `DATA_DIR` | `8080`, `/data` | Inside the container; normally leave alone. |
 
@@ -259,13 +316,13 @@ Node 22 or newer:
 ```bash
 npm ci
 npm run dev          # http://localhost:8080 with APP_PASSWORD=dev, data in ./data
-npm test             # unit tests (hours maths, Google Drive sync against a local fake)
+npm test             # unit tests (hours maths, Google Drive and Calendar sync against a local fake)
 ```
 
 ## Testing
 
-- `npm test`: unit tests for `public/hours.js` and the Google Drive sync (`test/drive.test.js`, run against `scripts/mock-google.mjs`, a small fake of the Google sign-in and Drive endpoints: names, device sign-in, uploads including big resumable ones, edits, moves, retries, deletes, sharing, service-account mode). Hours tests cover start/stop, optional meals, overnight, travel times ignored, typed-in hours, and time formats such as `07:30:00` and `7:30 PM`.
-- `scripts/e2e.mjs`: about 70 end-to-end checks against a running server. It signs in, creates entries with several crew on separate hours and with receipts, then checks the week and list views, search and filters, editing, deleting receipts, admin-only actions, settings, CSV, the preview Back button and Clear all data (wrong confirmation, non-admin and cross-site attempts blocked). Set `DOCKER_EXEC='docker exec eod-log'` to also check that upload files are deleted and backups are written. With `GMOCK=` pointing at `scripts/mock-google.mjs` (and the server started with the test-only `GDRIVE_API_BASE` / `GDRIVE_OAUTH_BASE` pointing at it), it also runs the Google Drive flow: connect, share, sync, retry, delete.
+- `npm test`: unit tests for `public/hours.js` (total and on-set hours) and the Google Drive and Calendar sync (`test/drive.test.js`, run against `scripts/mock-google.mjs`, a small fake of the Google sign-in, Drive and Calendar endpoints, including the rule that the device sign-in refuses Calendar: names, device sign-in, uploads including big resumable ones, edits, moves, retries, deletes, sharing, service-account mode, the folder-layout move, Calendar events with the PDF attached). Hours tests cover start/stop, optional meals, overnight, travel times ignored, typed-in hours, and time formats such as `07:30:00` and `7:30 PM`.
+- `scripts/e2e.mjs`: about 120 end-to-end checks against a running server. It signs in, creates entries with several crew on separate hours and with receipts, then checks the week and list views, search and filters, editing, deleting receipts, admin-only actions, settings, CSV, the preview Back button and Clear all data (wrong confirmation, non-admin and cross-site attempts blocked). Set `DOCKER_EXEC='docker exec eod-log'` to also check that upload files are deleted and backups are written. With `GMOCK=` pointing at `scripts/mock-google.mjs` (and the server started with the test-only `GDRIVE_API_BASE` / `GDRIVE_OAUTH_BASE` pointing at it), it also runs the Google Drive flow: connect, share, sync, retry, delete, and the Calendar flow (reconnect notice, connect, Test, Sync all, create/edit/delete events).
   With `MAILPIT=` set, it also sends the summary to a [Mailpit](https://github.com/axllent/mailpit) catcher and checks the email, including attached receipts.
   `BASE=http://127.0.0.1:7240 APP_PASSWORD=... ADMIN_PASSWORD=... MAILPIT=http://127.0.0.1:8025 node scripts/e2e.mjs`
 - `scripts/screenshots.mjs`: phone-size (390×844) screenshots into `preview/`. It needs `puppeteer-core` installed outside the project and Chrome.
@@ -282,6 +339,7 @@ npm test             # unit tests (hours maths, Google Drive sync against a loca
 | `src/views.js` | Server-rendered HTML (escaped by default). |
 | `src/summary.js`, `src/mailer.js` | Summary data, email HTML/text, SMTP, notification schedules and the scheduler. |
 | `src/drive.js`, `src/drivepdf.js` | Google Drive sync (sign-in, upload queue, folder layout) and the per-EOD PDF. |
+| `src/gcal.js` | Google Calendar sync (calendar, one event per EOD, PDF attachment, retries). |
 | `src/auth.js` | Shared-password sign-in, signed cookies, admin elevation. |
 | `public/` | `app.css`, `form.js` (EOD form), `hours.js` (shared hours maths), icons and manifest. |
 | `test/`, `scripts/` | Unit test, fixtures, end-to-end and screenshot scripts. |

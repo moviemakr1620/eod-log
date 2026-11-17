@@ -45,16 +45,6 @@
       '<label>Meal end' + tin('data-m="end"', m.end) + '</label>' +
       '<button type="button" class="rm-meal" aria-label="Remove meal">×</button></div>';
   }
-  function siteHtml(c) {
-    return '<div class="site"><label>On site' + tin('data-f="on_set"', c.on_set) + '</label>' +
-      '<label>Off site' + tin('data-f="wheels_up"', c.wheels_up) + '</label>' +
-      '<button type="button" class="rm-site" aria-label="Remove site time">×</button></div>';
-  }
-  function setSite(row, c) {
-    var box = q(row, '.sitebox'); box.innerHTML = '';
-    if (c && (c.on_set || c.wheels_up)) box.appendChild(el(siteHtml(c)));
-    q(row, '.addsite').hidden = !!q(row, '.site');
-  }
   function addCrew(c, focus) {
     c = c || {}; var id = ++seq;
     if (c.stop === undefined && c.wrap !== undefined) c.stop = c.wrap; // drafts from the old form
@@ -63,9 +53,12 @@
       '<div class="head"><label>Name<input data-f="name" list="dl-people" autocomplete="off" autocapitalize="words" value="' + esc(c.name) + '" placeholder="Crew member"></label>' +
       '<button type="button" class="rm" aria-label="Remove this person">×</button></div>' +
       '<div class="row2">' + timeInput('start', 'Start', c.start) + timeInput('stop', 'Stop', c.stop) + '</div>' +
-      '<div class="tot"><span>Hours <span class="muted small" data-detail></span></span><b data-total>–</b></div><div class="warn" data-warn></div>' +
-      '<div class="meals stack"></div><div class="sitebox"></div>' +
-      '<div class="addbtns"><button type="button" class="btn addmeal">+ Add meal break</button><button type="button" class="btn addsite">+ Add site time</button></div>' +
+      '<div class="row2">' + timeInput('on_set', 'On set start', c.on_set) + timeInput('wheels_up', 'On set end', c.wheels_up) + '</div>' +
+      '<div class="meals stack"></div>' +
+      '<div class="addbtns"><button type="button" class="btn addmeal">+ Add meal break</button></div>' +
+      '<div class="tots"><div class="tot"><span>On set hours</span><b data-onset>–</b></div>' +
+      '<div class="tot"><span>Total hours</span><b data-total>–</b></div></div>' +
+      '<div class="muted small" data-detail></div><div class="warn" data-warn></div>' +
       '<details' + (moreOpen ? ' open' : '') + '><summary>More: role, edit/DIT, hours override, note</summary><div class="stack">' +
       '<div class="row2"><label>Role<input data-f="role" list="dl-roles" autocomplete="off" value="' + esc(c.role) + '" placeholder="e.g. A1, Camera"></label>' +
       '<label>Edit / DIT hrs<input data-f="edit_hours" inputmode="decimal" value="' + esc(c.edit_hours) + '" placeholder="0"></label></div>' +
@@ -75,7 +68,6 @@
     var meals = q(row, '.meals');
     (c.meals || []).forEach(function (m) { if (m && (m.start || m.end)) meals.appendChild(el(mealHtml(m))); });
     syncMealBtn(row);
-    setSite(row, c);
     crewList.appendChild(row);
     updateCrew(row);
     if (focus) q(row, '[data-f=name]').focus();
@@ -90,7 +82,6 @@
       c[f] = isTime ? (H.norm(v) || '') : v;
       if (isTime && badTime(i)) c._bad = (c._bad || []).concat(f);
     });
-    if (!q(row, '.site')) { c.on_set = ''; c.wheels_up = ''; }
     // old entries: keep any saved leave-shop / return-to-shop values untouched (no longer shown)
     if (row.getAttribute('data-leave')) c.leave_shop = row.getAttribute('data-leave');
     if (row.getAttribute('data-return')) c.return_shop = row.getAttribute('data-return');
@@ -100,18 +91,18 @@
   function updateCrew(row) {
     var r = H.compute(readCrew(row));
     q(row, '[data-total]').textContent = r.paidMin == null ? '–' : H.fmt(r.paidMin) + ' (' + H.dec(r.paidMin) + ' h)';
+    q(row, '[data-onset]').textContent = r.onSiteMin == null ? '–' : H.fmt(r.onSiteMin) + ' (' + H.dec(r.onSiteMin) + ' h)';
     var bits = [];
-    if (r.overridden) bits.push('typed in');
-    if (r.onSiteMin != null) bits.push(H.dec(r.onSiteMin) + ' h on site');
-    if (r.mealMin) bits.push(H.dec(r.mealMin) + ' h meal');
-    q(row, '[data-detail]').textContent = bits.length ? '(' + bits.join(', ') + ')' : '';
+    if (r.overridden) bits.push('total typed in');
+    if (r.mealMin) bits.push(H.dec(r.mealMin) + ' h of meals taken out of total hours');
+    q(row, '[data-detail]').textContent = bits.join(' · ');
     q(row, '[data-warn]').textContent = r.warnings.join('. ');
     updateTotals();
   }
   function updateTotals() {
-    var sum = 0, n = 0;
-    qa(crewList, '.crew-row').forEach(function (row) { var r = H.compute(readCrew(row)); if (r.paidMin) { sum += r.paidMin; n++; } });
-    document.getElementById('crew-total').textContent = n ? H.dec(sum) + ' crew hrs' : '';
+    var sum = 0, os = 0, n = 0, no = 0;
+    qa(crewList, '.crew-row').forEach(function (row) { var r = H.compute(readCrew(row)); if (r.paidMin) { sum += r.paidMin; n++; } if (r.onSiteMin) { os += r.onSiteMin; no++; } });
+    document.getElementById('crew-total').textContent = (n ? 'Total ' + H.dec(sum) + ' h' : '') + (n && no ? ' · ' : '') + (no ? 'On set ' + H.dec(os) + ' h' : '');
   }
   function onEdit(ev) { var row = ev.target.closest && ev.target.closest('.crew-row'); if (row) updateCrew(row); }
   crewList.addEventListener('input', onEdit);
@@ -119,15 +110,11 @@
   crewList.addEventListener('click', function (ev) {
     var row = ev.target.closest('.crew-row'); if (!row) return;
     if (ev.target.closest('.rm')) {
-      if (qa(crewList, '.crew-row').length === 1) { qa(row, 'input').forEach(function (i) { i.value = ''; }); q(row, '.meals').innerHTML = ''; setSite(row, null); syncMealBtn(row); updateCrew(row); }
+      if (qa(crewList, '.crew-row').length === 1) { qa(row, 'input').forEach(function (i) { i.value = ''; }); q(row, '.meals').innerHTML = ''; syncMealBtn(row); updateCrew(row); }
       else { row.remove(); updateTotals(); }
       saveDraft();
     } else if (ev.target.closest('.addmeal')) {
       var m = el(mealHtml({})); q(row, '.meals').appendChild(m); syncMealBtn(row); q(m, 'input').focus(); updateCrew(row);
-    } else if (ev.target.closest('.addsite')) {
-      q(row, '.sitebox').appendChild(el(siteHtml({}))); q(row, '.addsite').hidden = true; q(row, '.site input').focus(); updateCrew(row);
-    } else if (ev.target.closest('.rm-site')) {
-      setSite(row, null); updateCrew(row); saveDraft();
     } else if (ev.target.closest('.rm-meal')) {
       ev.target.closest('.meal').remove(); syncMealBtn(row); updateCrew(row); saveDraft();
     }
@@ -135,7 +122,7 @@
   function timesOf(row) { var c = readCrew(row), t = { meals: c.meals }; TIMES.forEach(function (f) { t[f] = c[f]; }); return t; }
   function applyTimes(row, t) {
     setVal(q(row, '[data-f=start]'), t.start); setVal(q(row, '[data-f=stop]'), t.stop);
-    setSite(row, t);
+    setVal(q(row, '[data-f=on_set]'), t.on_set); setVal(q(row, '[data-f=wheels_up]'), t.wheels_up);
     var meals = q(row, '.meals'); meals.innerHTML = '';
     t.meals.forEach(function (m) { meals.appendChild(el(mealHtml(m))); });
     syncMealBtn(row);
