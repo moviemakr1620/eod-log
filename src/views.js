@@ -298,11 +298,12 @@ function drivePage(req, { st, dev, msg, err, cal }) {
 <h1>Google Drive</h1>
 ${msg ? html`<p class="alert info" role="status">${msg}</p>` : ''}${err ? html`<p class="alert" role="alert">${err}</p>` : ''}
 ${st.authError ? html`<p class="alert" role="alert">${st.authError}</p>` : ''}
+${st.idTypeMismatch ? html`<div class="alert" role="alert"><b>Client ID doesn't match the client type.</b> The saved Client ID was created as a “${st.idTypeMismatch === 'desktop' ? 'Desktop app' : 'TVs and Limited Input devices'}” client but the type below is “${desktop ? 'Desktop app' : 'TVs and Limited Input devices'}”. Google would answer “Error 400: invalid_request”. Create a new ${desktop ? 'Desktop app' : 'TVs and Limited Input devices'} OAuth client, paste its Client ID and secret below and Save.</div>` : ''}
 ${cal && cal.needsReconnect ? html`<div class="alert" role="alert"><b>Reconnect to enable Calendar.</b> Google Calendar is switched on, but the current Google sign-in only covers Drive. ${desktop ? html`Click <b>Reconnect Google</b> below and keep the Calendar box ticked.` : html`The “TVs and Limited Input devices” sign-in can't include Calendar (Google doesn't allow it there). Create a <b>Desktop app</b> OAuth client (README, “Google Calendar setup”), choose it below, Save, then reconnect.`}</div>` : ''}
 ${linking ? html`<div class="card stack drive-connect" id="connect">
 <h2>Approve on Google</h2>
 <p>1. <a class="btn primary" href="${st.link.url}" target="_blank" rel="noopener">Open the Google sign-in</a> (opens a new tab). Pick the account and <b>Allow</b>, keeping <b>Drive</b> and <b>Calendar</b> ticked.</p>
-<p>2. Google then sends you to a page that says <b>“This site can't be reached”</b> (the address starts with <code>127.0.0.1:9004</code>). That is expected: nothing is wrong.</p>
+<p>2. Google then sends you to a page that says <b>“This site can't be reached”</b> (the address starts with <code>127.0.0.1:9004</code>). That is expected: nothing is wrong. If Google instead shows <b>“Error 400: invalid_request”</b> or <b>redirect_uri_mismatch</b>, the Client ID is not a <b>Desktop app</b> client: create one in Google Cloud, paste its ID and secret below and Save.</p>
 <form method="post" action="/settings/drive/connect-link/finish" class="stack" autocomplete="off">
 <label>3. Copy the <b>whole address</b> from that tab's address bar and paste it here<textarea name="pasted" rows="3" required spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="http://127.0.0.1:9004/?state=…&amp;code=…"></textarea></label>
 <button class="btn primary big" type="submit">Finish connecting</button></form>
@@ -399,8 +400,10 @@ ${sa ? html`<input type="hidden" name="cal_mode" value="paste"><p class="small">
 <button class="btn primary big" type="submit">Save</button></form>
 
 <div class="card stack"><h2>What each event looks like</h2>
-<div class="evprev"><b>Villanova promo (Film shoot) – EOD</b><div class="small muted">Fri, Nov 13 · 7:00am – 5:00pm (from the earliest start to the latest stop; all day if nobody has times)</div>
-<pre class="tree">• Jason (DP): 7:00am–5:00pm, meal 12:00pm–12:30pm, on set 7:30am–4:30pm
+<div class="evprev"><b>Villanova promo (Film shoot) – EOD</b><div class="small muted">Fri, Nov 13 · all-day event (so events stack as a list and never overlap)</div>
+<pre class="tree">Crew times 7:00am–5:00pm
+
+• Jason (DP): 7:00am–5:00pm, meal 12:00pm–12:30pm, on set 7:30am–4:30pm
    → on set 8.5 h, total 9.5 h
 • Sam: 8:00am–4:00pm, on set 7:30am–4:30pm
    → on set 9 h, total 8 h

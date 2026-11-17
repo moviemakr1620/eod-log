@@ -37,6 +37,19 @@ const clientSecret = () => env.GDRIVE_CLIENT_SECRET || S.get('client_secret') ||
 const mode = () => S.get('mode') || 'oauth';
 /** 'desktop' = Desktop-app client + "paste the address" sign-in (Drive + Calendar). 'tv' = TVs and Limited Input client + device code (Drive only: Google does not allow Calendar scopes there). */
 const clientType = () => (env.GDRIVE_CLIENT_TYPE === 'tv' || env.GDRIVE_CLIENT_TYPE === 'desktop' ? env.GDRIVE_CLIENT_TYPE : S.get('client_type') || (clientId() ? 'tv' : 'desktop'));
+/** A Client ID only works with the client type it was created as (Desktop app vs TVs and Limited Input). We remember which type the saved ID was entered for;
+ *  if the type is switched but the ID wasn't replaced, Google answers "Error 400: invalid_request" (a TV client can't use a loopback redirect). Returns that old type, or ''. */
+function idTypeMismatch() {
+  if (env.GDRIVE_CLIENT_ID || !S.get('client_id')) return '';
+  const t = S.get('client_id_type');
+  return t && t !== clientType() ? t : '';
+}
+/** Call from the Settings save with what was saved BEFORE and AFTER the form was applied. */
+function noteClientId(before, after) {
+  if (!after.id) return;
+  if (!S.get('client_id_type')) S.set('client_id_type', before.id ? before.type : after.type); // an ID saved before this existed was a TV client (the only kind then)
+  if (after.id !== before.id) S.set('client_id_type', after.type);
+}
 /** Does the saved sign-in include Calendar? (A service account always "has" it; the calendar must then be shared with it.) */
 function calendarScopeOk() { return mode() === 'sa' ? true : / ?https:\/\/www\.googleapis\.com\/auth\/calendar( |$)/.test(S.get('scope') || ''); }
 function saKey() {
@@ -397,7 +410,7 @@ function status() {
   return {
     mode: mode(), connected: connected(), auto: S.get('auto') !== '0', clientType: clientType(), calendarScope: calendarScopeOk(), link: linkState(),
     account: mode() === 'sa' ? (saKey() || {}).client_email || '' : S.get('account') || '',
-    clientIdSet: Boolean(clientId()), clientId: env.GDRIVE_CLIENT_ID ? '' : S.get('client_id') || '', clientFromEnv: Boolean(env.GDRIVE_CLIENT_ID), secretSet: Boolean(clientSecret()),
+    idTypeMismatch: idTypeMismatch(), clientIdSet: Boolean(clientId()), clientId: env.GDRIVE_CLIENT_ID ? '' : S.get('client_id') || '', clientFromEnv: Boolean(env.GDRIVE_CLIENT_ID), secretSet: Boolean(clientSecret()),
     saSet: Boolean(saKey()), saEmail: (saKey() || {}).client_email || '', sharedFolderId: S.get('shared_folder_id') || '',
     rootName: rootName(), rootUrl: rid ? `https://drive.google.com/drive/folders/${rid}` : '',
     onDelete: S.get('on_delete') === 'trash' ? 'trash' : 'mark',
@@ -426,9 +439,15 @@ async function finishConnect(j, requestedScope) {
 // ---------- connect, way 1 (Desktop-app client): open Google's page, approve, then paste the address the browser lands on.
 // Needed for Calendar: Google's device-code flow only allows a short list of scopes (email, openid, profile, drive.appdata, drive.file, youtube) and Calendar is not on it.
 // The redirect goes to http://127.0.0.1:9004/?code=..., which nothing listens on, so the browser shows "can't connect"; the code is in the address bar.
+function guardClientType() {
+  const was = idTypeMismatch(); if (!was) return;
+  const name = (t) => (t === 'desktop' ? 'Desktop app' : 'TVs and Limited Input devices');
+  throw new DriveError(`The saved Client ID was entered as a “${name(was)}” client, but the client type is now “${name(clientType())}”. Google rejects that with “Error 400: invalid_request”. In Google Cloud create a new ${name(clientType())} OAuth client, paste its Client ID and secret here and Save (or switch the type back).`, 0);
+}
 let pendingLink = null; // { state, verifier, url, expires }
 function startLink() {
   if (!clientId() || !clientSecret()) throw new DriveError('Save the OAuth Client ID and Client secret first.', 0);
+  guardClientType();
   const state = crypto.randomBytes(16).toString('hex'), verifier = crypto.randomBytes(32).toString('base64url');
   const url = AUTH_URL + '?' + new URLSearchParams({
     client_id: clientId(), redirect_uri: LOOPBACK, response_type: 'code', scope: `${SCOPE_USER} ${SCOPE_CAL}`, access_type: 'offline', prompt: 'consent',
@@ -460,6 +479,7 @@ async function finishLink(pasted) {
 let pendingAuth = null; // { device_code, user_code, verification_url, expires, interval, state, error }
 async function startDevice() {
   if (!clientId() || !clientSecret()) throw new DriveError('Save the OAuth Client ID and Client secret first.', 0);
+  guardClientType();
   pendingLink = null;
   const j = await form(OAUTH + '/device/code', { client_id: clientId(), scope: SCOPE_USER });
   pendingAuth = { device_code: j.device_code, user_code: j.user_code, verification_url: j.verification_url || j.verification_uri, expires: Date.now() + (j.expires_in || 1800) * 1000, interval: Math.max(1, j.interval || 5), state: 'waiting' };
@@ -527,6 +547,7 @@ async function applySharing(emails, role) {
 }
 
 module.exports = {
+  idTypeMismatch, noteClientId,
   S, api, DriveError, kick, syncEntry, mode, saKey, calendarScopeOk, SCOPE_CAL, status, connected, enabled, enqueue, enqueueAll, onDelete, resetMapping, forgetEntries, runOnce, start, startDevice, deviceState, cancelDevice, disconnect, test, applySharing,
   resetToken, migrateLayout, startLink, finishLink, cancelLink, clientType, naming: { safeName, folderName, jobFolderName, pdfName, receiptNames, yearName, monthName, dayName }, backoff, MAX_ATTEMPTS,
 };

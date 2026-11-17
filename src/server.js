@@ -301,6 +301,7 @@ app.post('/settings/drive/save', requireAdmin, async (req, res) => {
   const prevMode = drive.S.get('mode') || 'oauth';
   drive.S.set('mode', m);
   if (m !== prevMode) { drive.resetToken(); drive.resetMapping(); }
+  const idBefore = { id: drive.S.get('client_id') || '', type: drive.clientType() };
   if (b.client_id !== undefined && str(b.client_id, 300)) drive.S.set('client_id', str(b.client_id, 300));
   if (str(b.client_secret, 300)) drive.S.set('client_secret', str(b.client_secret, 300));
   if (str(b.sa_json, 20000)) {
@@ -315,6 +316,7 @@ app.post('/settings/drive/save', requireAdmin, async (req, res) => {
     if (fid !== (drive.S.get('shared_folder_id') || '')) { drive.S.set('shared_folder_id', fid); if (m === 'sa') drive.resetMapping(); }
   }
   if (b.client_type === 'tv' || b.client_type === 'desktop') drive.S.set('client_type', b.client_type);
+  drive.noteClientId(idBefore, { id: drive.S.get('client_id') || '', type: drive.clientType() });
   const rn = str(b.root_name, 100); if (rn) drive.S.set('root_name', rn);
   drive.S.set('on_delete', b.on_delete === 'trash' ? 'trash' : 'mark');
   drive.S.set('auto', b.auto === '1' ? '1' : '0');
@@ -324,7 +326,9 @@ app.post('/settings/drive/save', requireAdmin, async (req, res) => {
   if (drive.connected()) {
     try { const errs = await drive.applySharing(emails, role); if (errs.length) warn = ' Sharing problem: ' + errs.join('; '); } catch (err) { warn = ' Could not update sharing: ' + err.message; }
   } else if (emails.length) { drive.S.set('share_pending', emails.join(', ')); drive.S.set('share_role', role); warn = ' Sharing will be applied after you connect.'; }
-  driveBack(res, 'Saved.' + warn, Boolean(warn && !/after you connect/.test(warn)));
+  const mm = drive.idTypeMismatch();
+  if (mm) warn += ` Heads up: this Client ID was created as a “${mm === 'desktop' ? 'Desktop app' : 'TVs and Limited Input devices'}” client, so it will not work with the type you picked. Create a new ${drive.clientType() === 'desktop' ? 'Desktop app' : 'TVs and Limited Input devices'} client in Google Cloud and paste its ID and secret.`;
+  driveBack(res, 'Saved.' + warn, Boolean((warn && !/after you connect/.test(warn)) || mm));
 });
 app.post('/settings/drive/connect', requireAdmin, async (req, res) => {
   try {

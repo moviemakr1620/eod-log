@@ -66,7 +66,8 @@ function validTz(tz) { try { new Intl.DateTimeFormat('en-US', { timeZone: tz });
 // ---------- the event
 const pad = (n) => String(n).padStart(2, '0');
 const hm = (min) => `${pad(Math.floor(min / 60) % 24)}:${pad(min % 60)}`;
-/** Earliest start to latest stop across the crew (a stop earlier than its start means past midnight). All-day when nobody has times. */
+/** Every EOD is an ALL-DAY event (date + next day, exclusive) so the calendar reads as a list and nothing overlaps.
+ *  `range` is the crew's earliest start to latest stop (a stop earlier than its start means past midnight), shown in the description. null when nobody has times. */
 function eventTimes(e) {
   const pick = (a, b) => {
     let start = null, end = null;
@@ -77,19 +78,20 @@ function eventTimes(e) {
       if (start === null || s < start) start = s;
       if (en !== null && (end === null || en > end)) end = en;
     });
-    return start === null ? null : { start, end: end === null || end <= start ? start + 60 : end };
+    return start === null ? null : { start, end };
   };
   const t = pick('start', 'stop') || pick('on_set', 'wheels_up');
-  if (!t) return { allDay: true, start: { date: e.date }, end: { date: addDays(e.date, 1) } };
-  const tz = validTz(e.tz || cfg.TZ);
-  const at = (min) => ({ dateTime: `${addDays(e.date, Math.floor(min / 1440))}T${hm(min % 1440)}:00`, timeZone: tz });
-  return { allDay: false, start: at(t.start), end: at(t.end) };
+  const clock = (min) => H.ampm(hm(min % 1440));
+  const range = !t ? null : `${clock(t.start)}${t.end === null ? '' : `–${clock(t.end)}${t.end >= 1440 ? ' (+1 day)' : ''}`}`;
+  return { allDay: true, start: { date: e.date }, end: { date: addDays(e.date, 1) }, range };
 }
 const eventTitle = (e) => `${e.job}${e.job_type ? ` (${e.job_type})` : ''} – EOD`;
 const entryUrl = (e) => (cfg.PUBLIC_URL ? `${cfg.PUBLIC_URL}/e/${e.id}` : '');
 function description(e) {
   const t = (v) => (v ? H.ampm(v) : '');
   const L = [];
+  const range = eventTimes(e).range;
+  if (range) L.push(`Crew times ${range}`, '');
   const head = [['Client', e.client], ['Location', e.location], ['Crew chief', e.crew_chief]].filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`);
   if (head.length) L.push(head.join(' · '), '');
   L.push('CREW');
@@ -120,12 +122,14 @@ function description(e) {
   if (out.length > MAX_DESC) out = out.slice(0, MAX_DESC - 1).trimEnd() + '…' + (url ? `\n\nOpen in ${cfg.APP_NAME}: ${url}` : '');
   return out;
 }
-function eventBody(e, pdfId) {
+/** `patch`: also clear any dateTime/timeZone an older (timed) version of the event had, so it converts to all-day instead of failing or staying timed. */
+function eventBody(e, pdfId, { patch = false } = {}) {
   const tm = eventTimes(e);
+  const day = (d) => (patch ? { date: d.date, dateTime: null, timeZone: null } : d);
   const url = entryUrl(e);
   return {
     summary: eventTitle(e), description: description(e), ...(e.location ? { location: e.location } : {}),
-    start: tm.start, end: tm.end, transparency: 'transparent', reminders: { useDefault: false },
+    start: day(tm.start), end: day(tm.end), transparency: 'transparent', reminders: { useDefault: false },
     ...(url ? { source: { title: cfg.APP_NAME, url } } : {}),
     extendedProperties: { private: { eodlog_entry: String(e.id) } },
     attachments: pdfId ? [{ fileUrl: `https://drive.google.com/file/d/${pdfId}/view`, title: D.naming.pdfName(e), mimeType: 'application/pdf', fileId: pdfId }] : [],
@@ -142,7 +146,7 @@ async function syncEntry(e) {
   const base = `/calendar/v3/calendars/${enc(cid)}/events`;
   let ev = null;
   if (row && row.event_id && row.calendar_id === cid) {
-    try { ev = await calApi('PATCH', `${base}/${enc(row.event_id)}?supportsAttachments=true`, { json: body }); } catch (err) { if (err.status !== 404 && err.status !== 410) throw err; }
+    try { ev = await calApi('PATCH', `${base}/${enc(row.event_id)}?supportsAttachments=true`, { json: eventBody(e, de && de.pdf_id, { patch: true }) }); } catch (err) { if (err.status !== 404 && err.status !== 410) throw err; }
     if (ev && ev.status === 'cancelled') ev = null; // deleted in Calendar by a person: make a fresh one
   }
   if (!ev) ev = await calApi('POST', `${base}?supportsAttachments=true`, { json: body });

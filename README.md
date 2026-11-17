@@ -229,6 +229,8 @@ One-time setup in Google Cloud (about 5 minutes, free):
    - *TVs client:* open **google.com/device** on your phone, enter the code, pick the account and **Allow**. The page switches to *Connected* by itself.
 7. Click **Sync all EODs** to upload the existing ones (they are moved into the new folder layout), then **Open "EOD Log" in Google Drive**. Share it with the team there, or list emails under "Share the folder with".
 
+**Google shows "Error 400: invalid_request" when you open the sign-in link?** The Client ID isn't a **Desktop app** client. A "TVs and Limited Input devices" client can't use the loopback redirect (Google says "Localhost URI is not allowed for 'NATIVE_DEVICE' client type"), and a Web application client gives `redirect_uri_mismatch`. A Client ID only works with the type it was created as, so switching the type radio in Settings isn't enough: create a **new Desktop app** client and paste its ID and secret. The app tracks this: if you change the type but keep the old ID, Settings warns and **Connect** refuses with that explanation. (Also check that the Google account is allowed to use the app: for an External app still in "Testing", add yourself under **Audience → Test users**.)
+
 **Already connected before Calendar existed?** The old sign-in only covers Drive. Switch the client type to **Desktop app** (a new client from step 4), then **Reconnect Google** and keep the Calendar box ticked.
 
 The sign-in (a refresh token) is stored in the app's database on the `/data` volume. It is never shown or logged. **Disconnect** revokes it. Note that the database backups made by "Clear all data" contain it too, and are readable only by the container user.
@@ -251,10 +253,10 @@ Use this if you'd rather the files belong to a Shared Drive than to one person. 
 Optional. Every EOD becomes **one event** on a dedicated calendar (not your personal one, so it's easy to share or hide):
 
 - **Title:** `<Job> (<Type>) – EOD`, e.g. `Villanova commencement promo (Film shoot) – EOD`.
-- **Time:** from the earliest crew Start to the latest Stop on the EOD's date (past midnight is handled). If nobody has times it is an all-day event.
+- **Time:** always an **all-day event** on the EOD's date, so the day reads as a clean list and events never overlap. The crew's time range is the first line of the description, e.g. `Crew times 7:00am–6:30pm` (earliest Start to latest Stop; `(+1 day)` when it runs past midnight; left out if nobody has times).
 - **Description:** client, location and crew chief; each person's times, meals, on-set hours and total hours; totals (total hours, on-set hours); expenses with who paid; vehicle and miles; media; notes; and a link back to the EOD in this app (uses `PUBLIC_URL`, so set it to the address people really use).
 - **Attachment:** the EOD PDF from Drive. People need access to the Drive file to open it, so share the Drive folder and the calendar with the same people.
-- Editing an EOD updates the same event. Deleting one removes the event, or titles it `(deleted) …`, to match what you chose for Drive. If someone deletes the event by hand, the next sync recreates it. **Clear all data never touches the calendar.**
+- Editing an EOD updates the same event, and an event an earlier version made as a timed one is converted to all-day in place. Deleting one removes the event, or titles it `(deleted) …`, to match what you chose for Drive. If someone deletes the event by hand, the next sync recreates it. **Clear all data never touches the calendar.**
 - It runs in the background after the PDF is uploaded, with the same retry queue as Drive (the Calendar feature needs Drive switched on).
 
 **OAuth mode (Option A)**

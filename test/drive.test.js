@@ -240,15 +240,23 @@ test('old layout (year > "2026-10 October" > "2026-10-05 Job (Type)") moves to y
 // ---------- Google Calendar
 const gcal = () => require('../src/gcal');
 
-test('calendar event times: earliest start to latest stop, past midnight, on set fallback, all day', () => {
+test('calendar event times: always all-day (date + next day); the crew time range goes in the description', () => {
   const g = gcal();
+  const allDay = (t, d, d2) => assert.deepStrictEqual([t.allDay, t.start, t.end], [true, { date: d }, { date: d2 }]);
   const t = g.eventTimes({ date: '2026-11-13', tz: 'America/New_York', crew: [{ start: '08:00', stop: '16:00' }, { start: '07:00', stop: '17:30' }] });
-  assert.deepStrictEqual([t.allDay, t.start.dateTime, t.end.dateTime, t.start.timeZone], [false, '2026-11-13T07:00:00', '2026-11-13T17:30:00', 'America/New_York']);
+  allDay(t, '2026-11-13', '2026-11-14'); assert.strictEqual(t.range, '7:00am–5:30pm');
   const n = g.eventTimes({ date: '2026-11-13', crew: [{ start: '18:00', stop: '02:00' }] });
-  assert.deepStrictEqual([n.start.dateTime, n.end.dateTime], ['2026-11-13T18:00:00', '2026-11-14T02:00:00']);
-  assert.strictEqual(g.eventTimes({ date: '2026-12-31', crew: [{ on_set: '22:00', wheels_up: '01:00' }] }).end.dateTime, '2027-01-01T01:00:00');
-  assert.deepStrictEqual(g.eventTimes({ date: '2026-11-13', crew: [{ name: 'x' }] }), { allDay: true, start: { date: '2026-11-13' }, end: { date: '2026-11-14' } });
-  assert.strictEqual(g.eventTimes({ date: '2026-11-13', crew: [{ start: '09:00' }] }).end.dateTime, '2026-11-13T10:00:00');
+  allDay(n, '2026-11-13', '2026-11-14'); assert.strictEqual(n.range, '6:00pm–2:00am (+1 day)');
+  const y = g.eventTimes({ date: '2026-12-31', crew: [{ on_set: '22:00', wheels_up: '01:00' }] });
+  allDay(y, '2026-12-31', '2027-01-01'); assert.strictEqual(y.range, '10:00pm–1:00am (+1 day)');
+  const none = g.eventTimes({ date: '2026-11-13', crew: [{ name: 'x' }] }); allDay(none, '2026-11-13', '2026-11-14'); assert.strictEqual(none.range, null);
+  assert.strictEqual(g.eventTimes({ date: '2026-11-13', crew: [{ start: '09:00' }] }).range, '9:00am');
+  const e = { id: 1, date: '2026-11-13', job: 'Gala', crew: [{ name: 'A', start: '07:00', stop: '18:30' }], expenses: [] };
+  assert.ok(g.description(e).startsWith('Crew times 7:00am–6:30pm\n'));
+  assert.ok(!g.description({ ...e, crew: [{ name: 'A' }] }).includes('Crew times'));
+  const b = g.eventBody(e, null), pb = g.eventBody(e, null, { patch: true });
+  assert.deepStrictEqual([b.start, b.end], [{ date: '2026-11-13' }, { date: '2026-11-14' }]);
+  assert.deepStrictEqual([pb.start, pb.end], [{ date: '2026-11-13', dateTime: null, timeZone: null }, { date: '2026-11-14', dateTime: null, timeZone: null }]);
   assert.strictEqual(g.eventTitle({ job: 'Gala', job_type: 'Live event' }), 'Gala (Live event) – EOD');
 });
 
@@ -268,7 +276,8 @@ test('calendar (OAuth): own calendar is created, one event per EOD with the PDF 
   assert.strictEqual(s.cals.length, 1); assert.strictEqual(s.cals[0].summary, 'KPI EODs'); assert.strictEqual(s.cals[0].timeZone, 'America/New_York');
   const ev = s.events.find((x) => x.summary === 'Gala (Film shoot) – EOD');
   assert.ok(ev, 'event for Gala'); assert.strictEqual(s.events.length, 2, 'one event per EOD (Gala + the earlier one)');
-  assert.deepStrictEqual([ev.start.dateTime, ev.end.dateTime], ['2026-11-13T07:00:00', '2026-11-13T17:00:00']);
+  assert.deepStrictEqual([ev.start, ev.end], [{ date: '2026-11-13' }, { date: '2026-11-14' }], 'all-day, never timed');
+  assert.match(ev.description, /^Crew times 7:00am–5:00pm\n/);
   const pdf = s.files.find((f) => f.name === 'EOD 2026-11-13 Gala.pdf');
   assert.strictEqual(ev.attachments.length, 1); assert.strictEqual(ev.attachments[0].fileId, pdf.id);
   assert.strictEqual(ev.attachments[0].fileUrl, `https://drive.google.com/file/d/${pdf.id}/view`); assert.strictEqual(ev.attachments[0].mimeType, 'application/pdf'); assert.strictEqual(ev.attachments[0].title, 'EOD 2026-11-13 Gala.pdf');
@@ -286,6 +295,14 @@ test('calendar (OAuth): own calendar is created, one event per EOD with the PDF 
   const calls = s.calls; // order in the log: the PDF is replaced in Drive first, then the event is patched
   assert.ok(calls.lastIndexOf('PATCH /calendar/v3/calendars/' + encodeURIComponent(s.cals[0].id) + '/events/' + ev.id) > calls.lastIndexOf('PATCH /upload/drive/v3/files/' + pdf.id + '?uploadType=multipart'), calls.slice(-8).join('\n'));
   assert.ok(s.calls.some((c) => c.includes('/events/') && c.startsWith('PATCH')), 'events.patch');
+
+  // an event an older version made as a TIMED one converts to all-day on the next patch (same event id)
+  await mock(`/mock/event-timed?id=${ev.id}`);
+  s = await state(); assert.ok(s.events.find((x) => x.id === ev.id).start.dateTime, 'precondition: timed');
+  store.update(id, store.normalise(body({ job: 'Gala night', expenses: [] })), [], []); drive.enqueue(id); await drive.runOnce();
+  s = await state(); const conv = s.events.find((x) => x.id === ev.id);
+  assert.deepStrictEqual([conv.start, conv.end], [{ date: '2026-11-13' }, { date: '2026-11-14' }], 'converted to all-day, no dateTime/timeZone left');
+  assert.strictEqual(s.events.length, 2, 'converted in place, not duplicated');
 
   // someone deletes the event in Google Calendar -> next edit makes a fresh one
   await mock(`/mock/event-delete?id=${ev.id}`);
@@ -364,4 +381,20 @@ test('calendar (service account): needs a calendar shared with it; works once sh
   const s = await state(); const ev = s.events.find((x) => x.calendarId === cal);
   assert.ok(ev && ev.summary === 'SA cal job (Film shoot) – EOD' && ev.attachments[0].fileUrl.includes('/file/d/'), 'event on the shared calendar with the PDF');
   assert.strictEqual(s.cals.filter((c) => !c.sa).length, 0, 'service account mode never creates calendars');
+});
+
+test('client type vs Client ID: switching the type without replacing the ID is flagged and Connect refuses', async () => {
+  const S = drive.S;
+  const keep = ['client_id', 'client_type', 'client_id_type'].map((k) => [k, S.get(k)]);
+  try {
+    S.set('client_id', 'old-tv.apps.googleusercontent.com'); S.set('client_secret', 'x'); S.set('client_type', 'tv'); S.set('client_id_type', '');
+    // Settings save: type switched to desktop, same ID -> the ID stays recorded as a TV client
+    S.set('client_type', 'desktop'); drive.noteClientId({ id: 'old-tv.apps.googleusercontent.com', type: 'tv' }, { id: 'old-tv.apps.googleusercontent.com', type: 'desktop' });
+    assert.strictEqual(drive.idTypeMismatch(), 'tv');
+    assert.throws(() => drive.startLink(), /invalid_request/);
+    await assert.rejects(() => drive.startDevice(), /invalid_request/);
+    // a new ID entered while the type is desktop -> recorded as desktop, no mismatch
+    S.set('client_id', 'new-desktop.apps.googleusercontent.com'); drive.noteClientId({ id: 'old-tv.apps.googleusercontent.com', type: 'desktop' }, { id: 'new-desktop.apps.googleusercontent.com', type: 'desktop' });
+    assert.strictEqual(drive.idTypeMismatch(), ''); assert.doesNotThrow(() => drive.startLink()); drive.cancelLink();
+  } finally { keep.forEach(([k, v]) => S.set(k, v || '')); drive.cancelLink(); }
 });

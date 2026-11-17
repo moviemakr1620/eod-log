@@ -238,7 +238,12 @@ if (GMOCK) {
   r = await req('/settings/calendar/test', { method: 'POST' }); ok(/Test%20failed.*Reconnect/.test(r.headers.get('location')), 'Test says to reconnect');
   ok(!((await gm('/mock/state', 'GET')).calls.some((c) => c.includes('/calendar/'))), 'no Calendar API calls were made without the scope');
   // switch to a Desktop-app client and connect by pasting the address
-  r = await req('/settings/drive/save', { method: 'POST', body: new URLSearchParams({ mode: 'oauth', client_type: 'desktop', root_name: 'KPI EOD Log', auto: '1', on_delete: 'mark', share: '', share_role: 'reader' }) });
+  r = await req('/settings/drive/save', { method: 'POST', body: new URLSearchParams({ mode: 'oauth', client_type: 'desktop', client_id: 'test-client.apps.googleusercontent.com', root_name: 'KPI EOD Log', auto: '1', on_delete: 'mark', share: '', share_role: 'reader' }) });
+  ok(/Heads%20up/.test(r.headers.get('location')), 'switching the type but keeping the same Client ID warns');
+  h = await text(await req('/settings/drive')); ok(h.includes("doesn't match the client type"), 'Drive page shows the client-type mismatch notice');
+  r = await req('/settings/drive/connect', { method: 'POST' }); ok(/err=.*invalid_request/.test(decodeURIComponent(r.headers.get('location'))), 'Connect refuses (instead of sending Google a TV client with a loopback redirect)');
+  r = await req('/settings/drive/save', { method: 'POST', body: new URLSearchParams({ mode: 'oauth', client_type: 'desktop', client_id: 'desktop-client.apps.googleusercontent.com', client_secret: 'desktop-secret', root_name: 'KPI EOD Log', auto: '1', on_delete: 'mark', share: '', share_role: 'reader' }) });
+  ok(/msg=Saved/.test(r.headers.get('location')) && !/Heads%20up/.test(r.headers.get('location')), 'pasting a new Client ID clears the warning');
   r = await req('/settings/drive/connect', { method: 'POST' }); ok(r.status === 303, 'start the paste-the-address sign-in');
   h = await text(await req('/settings/drive'));
   const authUrl = /href="(https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?[^"]+)"/.exec(h);
@@ -260,7 +265,8 @@ if (GMOCK) {
   const evAcme = st.events.find((x) => x.summary === 'Acme Spring Promo (Film shoot) – EOD');
   const pdfAcme = st.files.find((f) => f.name === 'EOD ' + d1 + ' Acme Spring Promo.pdf');
   ok(evAcme && pdfAcme && evAcme.attachments[0].fileId === pdfAcme.id && evAcme.attachments[0].mimeType === 'application/pdf', 'event title "<Job> (<Type>) – EOD" with the EOD PDF from Drive attached');
-  ok(evAcme.start.dateTime === d1 + 'T07:30:00' && evAcme.end.dateTime === d1 + 'T18:00:00' && evAcme.start.timeZone === 'America/New_York', 'event runs from the earliest start to the latest stop in the entry time zone');
+  ok(evAcme.start.date === d1 && !evAcme.start.dateTime && evAcme.end.date && !evAcme.end.dateTime && evAcme.end.date > d1, 'event is ALL-DAY (start.date = the entry date, end.date = next day), never timed');
+  ok(/^Crew times 7:30am–6:00pm\n/.test(evAcme.description), 'description starts with the crew time range');
   ok(/Total hours: 27\.5 h · On set hours: 11 h/.test(evAcme.description) && evAcme.description.includes('Maria Lopez') && evAcme.description.includes('$88.64') && evAcme.description.includes(`/e/${id1}`) && evAcme.source && evAcme.source.url.endsWith(`/e/${id1}`), 'description has crew, total + on set hours, expenses and a link back to the entry');
   // a new EOD gets its event by itself; edits patch the same event; delete follows the Drive setting
   r = await req('/new', { method: 'POST', body: entryForm({ fields: { job: 'Calendar check', date: today, job_type: 'Live event' }, crew: [{ name: 'Jason', start: '09:00', stop: '13:00' }] }) });
@@ -268,7 +274,7 @@ if (GMOCK) {
   ok(await waitFor(async () => (await calEvents()).some((x) => x.summary === 'Calendar check (Live event) – EOD'), 20000), 'new EOD reaches the calendar by itself');
   const evC = (await calEvents()).find((x) => x.summary === 'Calendar check (Live event) – EOD');
   r = await req(`/e/${idCal}/edit`, { method: 'POST', body: entryForm({ fields: { job: 'Calendar check', date: today, job_type: 'Live event', notes: 'Edited for calendar' }, crew: [{ name: 'Jason', start: '09:00', stop: '14:30' }] }) });
-  ok(await waitFor(async () => { const e2 = (await calEvents()).filter((x) => x.summary === 'Calendar check (Live event) – EOD'); return e2.length === 1 && e2[0].id === evC.id && e2[0].end.dateTime === today + 'T14:30:00' && e2[0].description.includes('Edited for calendar'); }, 20000), 'editing the EOD updates the same event (no duplicate)');
+  ok(await waitFor(async () => { const e2 = (await calEvents()).filter((x) => x.summary === 'Calendar check (Live event) – EOD'); return e2.length === 1 && e2[0].id === evC.id && e2[0].start.date === today && !e2[0].start.dateTime && e2[0].description.startsWith('Crew times 9:00am–2:30pm') && e2[0].description.includes('Edited for calendar'); }, 20000), 'editing the EOD updates the same event (no duplicate)');
   r = await req(`/e/${idCal}/delete`, { method: 'POST' });
   ok(await waitFor(async () => (await calEvents()).some((x) => x.id === evC.id && x.summary === '(deleted) Calendar check (Live event) – EOD'), 20000), 'deleting the EOD marks its event "(deleted) ..." (same as the Drive setting)');
   h = await text(await req('/settings')); ok(h.includes('KPI EODs') && h.includes('waiting') || h.includes('All caught up'), 'Settings card shows Calendar status');

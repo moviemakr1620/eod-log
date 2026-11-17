@@ -9,6 +9,7 @@
 //   POST /mock/folder?name=X     make a folder (stands in for a Shared Drive folder)
 //   POST /mock/trash?id=X        trash a file as if a user did it in Drive
 //   POST /mock/grant?scope=...   what the next authorization-code sign-in is granted (default: drive.file + calendar; use drive.file to simulate unticking Calendar)
+//   POST /mock/event-timed?id=X      turn an event into a timed one (7:00-18:30), as old versions of the app made
 //   POST /mock/calendar?name=X&sa=1   make a calendar (sa=1: shared with service accounts, like "Make changes to events")
 //   POST /mock/event-delete?cal=X&id=Y   delete an event as a person would in Calendar
 // Usage: PORT=8090 node scripts/mock-google.mjs
@@ -56,11 +57,12 @@ export function startMock(port = Number(process.env.PORT || 8090)) {
     if (p === '/mock/move') { const f = st.files[u.searchParams.get('id')]; if (f) f.parents = [u.searchParams.get('to')]; return send(res, 200, { ok: !!f }); }
     if (p === '/mock/grant') { st.grant = u.searchParams.get('scope') || st.grant; return send(res, 200, {}); }
     if (p === '/mock/calendar') { const c = { id: id('cal') + '@group.calendar.google.com', summary: u.searchParams.get('name') || 'Shared calendar', sa: u.searchParams.get('sa') === '1' }; st.cals[c.id] = c; return send(res, 200, { id: c.id }); }
+    if (p === '/mock/event-timed') { const ev = st.events[u.searchParams.get('id')]; if (ev) { ev.start = { dateTime: `${ev.start.date || ev.start.dateTime.slice(0, 10)}T07:00:00`, timeZone: 'America/New_York' }; ev.end = { dateTime: `${ev.start.dateTime.slice(0, 10)}T18:30:00`, timeZone: 'America/New_York' }; } return send(res, 200, { ok: !!ev }); }
     if (p === '/mock/event-delete') { const ev = st.events[u.searchParams.get('id')]; if (ev) ev.status = 'cancelled'; return send(res, 200, { ok: !!ev }); }
     if (p === '/mock/trash') { const f = st.files[u.searchParams.get('id')]; if (f) f.trashed = true; return send(res, 200, { ok: !!f }); }
     // ---- oauth
     if (p === '/device/code') {
-      const f = formB(); if (f.client_id !== 'test-client.apps.googleusercontent.com') return send(res, 401, { error: 'invalid_client', error_description: 'The OAuth client was not found.' });
+      const f = formB(); if (!/^(test|desktop)-client\.apps\.googleusercontent\.com$/.test(f.client_id)) return send(res, 401, { error: 'invalid_client', error_description: 'The OAuth client was not found.' });
       if (f.scope !== 'https://www.googleapis.com/auth/drive.file') return send(res, 400, { error: 'invalid_scope' });
       st.device = { code: id('dc'), user: 'MOCK-' + crypto.randomBytes(2).toString('hex').toUpperCase(), state: 'pending' };
       return send(res, 200, { device_code: st.device.code, user_code: st.device.user, verification_url: 'https://www.google.com/device', expires_in: 1800, interval: 1 });
@@ -76,7 +78,7 @@ export function startMock(port = Number(process.env.PORT || 8090)) {
         return send(res, 200, { access_token: a, refresh_token: r, expires_in: 3599, scope, token_type: 'Bearer' });
       }
       if (f.grant_type === 'authorization_code') {
-        if (f.client_id !== 'test-client.apps.googleusercontent.com' || f.client_secret !== 'test-secret') return send(res, 401, { error: 'invalid_client' });
+        if (!/^(test|desktop)-client\.apps\.googleusercontent\.com$/.test(f.client_id) || !['test-secret', 'desktop-secret'].includes(f.client_secret)) return send(res, 401, { error: 'invalid_client' });
         if (f.code !== 'MOCKCODE' || !f.code_verifier || f.code_verifier.length < 43 || f.redirect_uri !== 'http://127.0.0.1:9004') return send(res, 400, { error: 'invalid_grant', error_description: 'Bad Request' });
         st.codeUsed = (st.codeUsed || 0) + 1; if (st.codeUsed > 1 && !st.codeReusable) return send(res, 400, { error: 'invalid_grant', error_description: 'Code was already redeemed.' });
         const a = id('at'), r = id('rt'); st.access.set(a, { kind: 'user', scope: st.grant }); st.refresh.set(r, st.grant);
@@ -130,7 +132,16 @@ export function startMock(port = Number(process.env.PORT || 8090)) {
         const ev = st.events[eid];
         if (!ev || ev.calendarId !== cid) return gErr(res, 404, 'notFound', 'Not Found');
         if (req.method === 'DELETE') { if (ev.status === 'cancelled') return gErr(res, 410, 'deleted', 'Resource has been deleted'); delete st.events[eid]; return send(res, 204); }
-        if (req.method === 'PATCH') { if (ev.status === 'cancelled') return gErr(res, 410, 'deleted', 'Resource has been deleted'); Object.assign(ev, clean(j)); return send(res, 200, ev); }
+        if (req.method === 'PATCH') {
+          if (ev.status === 'cancelled') return gErr(res, 410, 'deleted', 'Resource has been deleted');
+          // like Google: top-level fields replace; start/end are merged key by key and null deletes a key; the result must be exactly date OR dateTime
+          const merged = { ...ev }; const c = clean(j);
+          for (const [k, v] of Object.entries(c)) {
+            if ((k === 'start' || k === 'end') && v && typeof v === 'object') { const o = { ...ev[k] }; for (const [kk, vv] of Object.entries(v)) { if (vv === null) delete o[kk]; else o[kk] = vv; } merged[k] = o; } else merged[k] = v;
+          }
+          for (const k of ['start', 'end']) { const o = merged[k] || {}; if (Boolean(o.date) === Boolean(o.dateTime)) return gErr(res, 400, 'invalid', `Invalid ${k} time: need exactly one of date or dateTime`); }
+          Object.assign(ev, merged); return send(res, 200, ev);
+        }
       }
       return gErr(res, 405, 'badRequest');
     }
