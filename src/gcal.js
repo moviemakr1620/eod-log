@@ -157,10 +157,7 @@ async function syncEntry(e) {
 async function syncDeleted(row) {
   if (row.event_id && row.calendar_id) {
     const url = `/calendar/v3/calendars/${enc(row.calendar_id)}/events/${enc(row.event_id)}`;
-    try {
-      if (S.get('on_delete') === 'trash') await calApi('DELETE', url);
-      else await calApi('PATCH', url, { json: { summary: D.naming.safeName('(deleted) ' + (row.summary || 'EOD'), 250) } });
-    } catch (err) { if (err.status !== 404 && err.status !== 410) throw err; }
+    try { await calApi('DELETE', url); } catch (err) { if (err.status !== 404 && err.status !== 410) throw err; } // already gone = done
   }
   db.prepare('DELETE FROM cal_entries WHERE id=?').run(row.id);
 }
@@ -192,8 +189,13 @@ function onDelete(entryId) {
 }
 /** New Google account / drive: the old events are not ours any more. */
 function reset() { db.exec('DELETE FROM cal_queue; DELETE FROM cal_entries;'); S.del('cal_auto_id'); S.del('cal_auto_name'); calChecked = 0; }
-/** "Clear all data": entry ids restart, so forget the id -> event mapping (events in Google Calendar are NOT deleted). */
+/** "Clear all data" without touching Google: entry ids restart, so forget the id -> event mapping (the events stay in Calendar). */
 function forget() { db.exec('DELETE FROM cal_queue; DELETE FROM cal_entries;'); }
+/** "Clear all data" + remove from Google: every event we made is queued for deletion (entry_id NULL, so the rows survive the wipe and the worker retries them). Runs inside the clear transaction. */
+function clearAll() {
+  db.exec(`DELETE FROM cal_queue; DELETE FROM cal_entries WHERE event_id IS NULL;
+    UPDATE cal_entries SET entry_id=NULL, pending_delete=1, attempts=0, next_at=0, last_error=NULL;`);
+}
 /** Settings changed (calendar, name, on/off): refresh every event on the (new) calendar. */
 function settingsChanged({ calendarSwitched } = {}) {
   calChecked = 0;
@@ -203,10 +205,10 @@ function settingsChanged({ calendarSwitched } = {}) {
 
 /** Run one due calendar task. null = nothing to do. */
 async function step(now) {
-  if (!usable()) return null;
+  if (!(D.connected() && D.calendarScopeOk())) return null; // deletions still run when the Calendar feature was switched off meanwhile
   const max = D.MAX_ATTEMPTS;
   const del = db.prepare('SELECT * FROM cal_entries WHERE pending_delete=1 AND next_at<=? AND attempts<? ORDER BY id LIMIT 1').get(now, max);
-  const job = del ? null : db.prepare('SELECT * FROM cal_queue WHERE next_at<=? AND attempts<? ORDER BY next_at, entry_id LIMIT 1').get(now, max);
+  const job = del || !usable() ? null : db.prepare('SELECT * FROM cal_queue WHERE next_at<=? AND attempts<? ORDER BY next_at, entry_id LIMIT 1').get(now, max);
   if (!del && !job) return null;
   try {
     if (del) await syncDeleted(del);
@@ -259,4 +261,4 @@ function status() {
   };
 }
 
-module.exports = { S, step, enqueue, enqueueAll, onDelete, reset, forget, settingsChanged, test, status, eventTimes, eventTitle, description, eventBody, usable, needsReconnect, wanted, calMode, calendarId };
+module.exports = { S, step, enqueue, enqueueAll, onDelete, reset, forget, clearAll, settingsChanged, test, status, eventTimes, eventTitle, description, eventBody, usable, needsReconnect, wanted, calMode, calendarId };

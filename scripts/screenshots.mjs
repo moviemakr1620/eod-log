@@ -129,6 +129,9 @@ if (process.env.GMOCK) {
   await page.goto(BASE + '/settings', { waitUntil: 'networkidle0' });
   await shot('19-settings-with-calendar-full', true);
 }
+// clear-all with Google connected: the "Also remove from Google Drive and Calendar" box
+await page.goto(BASE + '/settings/clear', { waitUntil: 'networkidle0' });
+await shot('21-clear-all-with-google-full', true);
 // ---- light / dark mode: the header button, remembered in localStorage, every kind of page
 {
   const theme = () => page.evaluate(() => document.documentElement.getAttribute('data-theme'));

@@ -256,6 +256,7 @@ async function syncEntry(e) {
   } else if (de.folder_name !== fname || de.parent_id !== parent) {
     await patchMeta(de.folder_id, { name: fname }, de.parent_id !== parent ? { add: parent, remove: de.parent_id } : {});
     db.prepare('UPDATE drive_entries SET folder_name=?, parent_id=? WHERE id=?').run(fname, parent, de.id);
+    if (de.parent_id !== parent) S.set('prune_due', '1'); // the old day folder may be empty now
   }
   // the PDF: replace content in place (same file id, Drive keeps versions)
   const pdf = await entryPdf(e);
@@ -280,12 +281,37 @@ async function syncEntry(e) {
   db.prepare('UPDATE drive_entries SET synced_at=? WHERE id=?').run(new Date().toISOString(), de.id);
 }
 
+/** A deleted EOD: its whole job folder (PDF + receipts) goes to the Drive trash (recoverable for 30 days). Emptied day/month/year folders are tidied up afterwards. */
 async function syncDeleted(de) {
-  if (de.folder_id) {
-    if (S.get('on_delete') === 'trash') await trash(de.folder_id);
-    else { try { await patchMeta(de.folder_id, { name: safeName('(deleted) ' + (de.folder_name || '')) }); } catch (err) { if (err.status !== 404) throw err; } }
-  }
+  if (de.folder_id) await trash(de.folder_id); // 404 = already gone = done
   db.prepare('DELETE FROM drive_entries WHERE id=?').run(de.id);
+  S.set('prune_due', '1');
+}
+/** Trash the day / month / year folders we made that have nothing left in them (bottom-up). The root folder stays. */
+async function listCount(id) {
+  const q = encodeURIComponent(`'${id}' in parents and trashed=false`);
+  const j = await api('GET', `/drive/v3/files?q=${q}&pageSize=1&fields=files(id)&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives`);
+  return (j.files || []).length;
+}
+async function prune() {
+  if (!S.get('prune_due') || Date.now() < Number(S.get('prune_next') || 0)) return false;
+  try {
+    for (const kind of ['d:', 'm:', 'y:']) {
+      for (const row of db.prepare('SELECT key,file_id FROM drive_folders WHERE substr(key,1,2)=?').all(kind)) {
+        let gone = false;
+        const f = await getFile(row.file_id);
+        if (!f || f.trashed) gone = true;
+        else if (await listCount(row.file_id) === 0) { await trash(row.file_id); gone = true; }
+        if (gone) { db.prepare('DELETE FROM drive_folders WHERE key=?').run(row.key); folderChecked.delete(row.key); }
+      }
+    }
+    S.del('prune_due'); S.del('prune_next');
+    return true;
+  } catch (err) {
+    S.set('prune_next', String(Date.now() + 5 * 60000)); console.warn('[eod-log] drive tidy-up failed, will retry:', err.message);
+    S.set('last_error', `${new Date().toISOString()} ${String(err.message).slice(0, 300)}`);
+    return false;
+  }
 }
 
 // ---------- queue
@@ -314,6 +340,14 @@ function enqueueAll() {
   db.prepare('UPDATE drive_entries SET attempts=0, next_at=0 WHERE pending_delete=1').run();
   kick();
   return ids.length;
+}
+/** "Clear all data" + remove from Google: queue every job folder we made for the trash (rows keep their folder id with entry_id NULL, so they survive the wipe
+ *  and are retried until done), then the empty day/month/year folders. Runs inside the clear transaction; call kick() afterwards. */
+function clearAll() {
+  db.exec(`DELETE FROM drive_queue; DELETE FROM drive_files; DELETE FROM drive_entries WHERE folder_id IS NULL;
+    UPDATE drive_entries SET entry_id=NULL, pending_delete=1, attempts=0, next_at=0, last_error=NULL;`);
+  S.set('prune_due', '1'); S.del('prune_next');
+  require('./gcal').clearAll();
 }
 /** Entry IDs restart after "Clear all data", so the id -> Drive mapping must go too (the Drive files themselves stay). */
 function resetMapping({ requeue = false } = {}) {
@@ -355,7 +389,7 @@ async function runInner({ limit = 50 } = {}) {
       const job = del ? null : db.prepare('SELECT * FROM drive_queue WHERE next_at<=? AND attempts<? ORDER BY next_at, entry_id LIMIT 1').get(now, MAX_ATTEMPTS);
       if (!del && !job) {
         const r = await require('./gcal').step(now); // calendar events run after the PDF is in Drive
-        if (!r) break;
+        if (!r) { if (await prune()) { done++; continue; } break; }
         if (r.ok) done++;
         if (r.fatal) break;
         continue;
@@ -413,7 +447,7 @@ function status() {
     idTypeMismatch: idTypeMismatch(), clientIdSet: Boolean(clientId()), clientId: env.GDRIVE_CLIENT_ID ? '' : S.get('client_id') || '', clientFromEnv: Boolean(env.GDRIVE_CLIENT_ID), secretSet: Boolean(clientSecret()),
     saSet: Boolean(saKey()), saEmail: (saKey() || {}).client_email || '', sharedFolderId: S.get('shared_folder_id') || '',
     rootName: rootName(), rootUrl: rid ? `https://drive.google.com/drive/folders/${rid}` : '',
-    onDelete: S.get('on_delete') === 'trash' ? 'trash' : 'mark',
+    cleanup: db.prepare('SELECT (SELECT COUNT(*) FROM drive_entries WHERE pending_delete=1) + (SELECT COUNT(*) FROM cal_entries WHERE pending_delete=1) n').get().n + (S.get('prune_due') ? 1 : 0),
     share: JSON.parse(S.get('share') || '{}'), sharePending: S.get('share_pending') || '', shareRole: S.get('share_role') === 'writer' ? 'writer' : 'reader',
     pending: (q.n || 0) + (d.n || 0), failing: (q.failing || 0) + (d.failing || 0), dead: q.dead || 0,
     synced: db.prepare('SELECT COUNT(*) n FROM drive_entries WHERE entry_id IS NOT NULL AND synced_at IS NOT NULL').get().n,
@@ -548,6 +582,6 @@ async function applySharing(emails, role) {
 
 module.exports = {
   idTypeMismatch, noteClientId,
-  S, api, DriveError, kick, syncEntry, mode, saKey, calendarScopeOk, SCOPE_CAL, status, connected, enabled, enqueue, enqueueAll, onDelete, resetMapping, forgetEntries, runOnce, start, startDevice, deviceState, cancelDevice, disconnect, test, applySharing,
+  S, api, DriveError, kick, syncEntry, mode, saKey, calendarScopeOk, SCOPE_CAL, status, connected, enabled, enqueue, enqueueAll, onDelete, resetMapping, forgetEntries, clearAll, runOnce, start, startDevice, deviceState, cancelDevice, disconnect, test, applySharing,
   resetToken, migrateLayout, startLink, finishLink, cancelLink, clientType, naming: { safeName, folderName, jobFolderName, pdfName, receiptNames, yearName, monthName, dayName }, backoff, MAX_ATTEMPTS,
 };

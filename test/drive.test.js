@@ -132,12 +132,15 @@ test('device sign-in, upload, edit, move, retry, delete, sharing, disconnect', a
   s = await state();
   assert.ok(tree(s).includes('EOD Log/2026/12 December/2026-12-02/Retry job (Film shoot)/EOD 2026-12-02 Retry job.pdf'), 'recreated after root was trashed');
 
-  // delete in the app -> folder kept but renamed "(deleted) ..." (default)
+  // delete in the app -> the job folder goes to the trash (not renamed), and the emptied day + month folders are tidied up
+  const treeBefore = tree(await state()); assert.ok(treeBefore.some((x) => x.endsWith('2026-12-02/Retry job (Film shoot)')));
   drive.onDelete(id); store.remove(id); await drive.runOnce();
   s = await state();
-  assert.ok(tree(s).some((x) => x.endsWith('/(deleted) Retry job (Film shoot)')));
-  // with "trash" chosen, the folder goes to the trash
-  drive.S.set('on_delete', 'trash');
+  assert.ok(!tree(s).some((x) => x.includes('Retry job')), 'job folder trashed'); assert.ok(!s.files.some((f) => f.name.startsWith('(deleted)')), 'no "(deleted)" rename any more');
+  assert.ok(s.files.find((f) => f.name === 'Retry job (Film shoot)').inTrash);
+  assert.ok(!tree(s).some((x) => x.includes('2026-12-02')) && !tree(s).some((x) => x.includes('12 December')), 'empty day + month folders tidied up');
+  assert.strictEqual(db.prepare("SELECT COUNT(*) n FROM drive_folders WHERE key IN ('d:2026-12-02','m:2026-12')").get().n, 0);
+  assert.deepStrictEqual(tree(s), ['EOD Log'], 'year folder tidied too (nothing left in it); the root folder stays');
   const id2 = store.create(store.normalise(body({ job: 'Trash me', expenses: [] })), [], 'Jason');
   drive.enqueue(id2); await drive.runOnce();
   assert.ok(tree(await state()).some((x) => x.endsWith('Trash me (Film shoot)')));
@@ -260,9 +263,9 @@ test('calendar event times: always all-day (date + next day); the crew time rang
   assert.strictEqual(g.eventTitle({ job: 'Gala', job_type: 'Live event' }), 'Gala (Live event) – EOD');
 });
 
-test('calendar (OAuth): own calendar is created, one event per EOD with the PDF attached, edits patch it, deletes follow the Drive setting', async () => {
+test('calendar (OAuth): own calendar is created, one event per EOD with the PDF attached, edits patch it, delete removes the event', async () => {
   await mock('/mock/reset'); freshOauth(); await reconnect();
-  const g = gcal(); drive.S.set('on_delete', 'mark');
+  const g = gcal();
   // not switched on: nothing is created
   const e0 = store.create(store.normalise(body({ job: 'Before calendar', expenses: [] })), [], 'Jason');
   drive.enqueue(e0); await drive.runOnce();
@@ -321,15 +324,13 @@ test('calendar (OAuth): own calendar is created, one event per EOD with the PDF 
   s = await state(); assert.ok(s.events.some((x) => x.summary === 'Gala retry (Film shoot) – EOD'), 'event updated after retry');
   assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM cal_queue').get().n, 0); assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM drive_queue').get().n, 0);
 
-  // delete in the app: default = prefix "(deleted)"; with "trash" the event is removed
+  // delete in the app: the event is deleted (no "(deleted)" prefix)
   drive.onDelete(id); store.remove(id); await drive.runOnce();
-  s = await state(); assert.ok(s.events.some((x) => x.summary === '(deleted) Gala retry (Film shoot) – EOD'), 'marked deleted');
-  drive.S.set('on_delete', 'trash');
+  s = await state(); assert.ok(!s.events.some((x) => /Gala retry/.test(x.summary)), 'event removed'); assert.ok(!s.events.some((x) => x.summary.startsWith('(deleted)')));
   const id2 = store.create(store.normalise(body({ job: 'Temp', expenses: [] })), [], 'Jason'); drive.enqueue(id2); await drive.runOnce();
   assert.ok((await state()).events.some((x) => x.summary.startsWith('Temp ')));
   drive.onDelete(id2); store.remove(id2); await drive.runOnce();
   assert.ok(!(await state()).events.some((x) => x.summary.startsWith('Temp ')), 'event removed');
-  drive.S.set('on_delete', 'mark');
 
   // the Test button: finds the calendar, adds + removes a test event
   const before = (await state()).events.length; const r = await g.test(); assert.strictEqual(r.name, 'KPI Crew EODs'); assert.strictEqual((await state()).events.length, before);
@@ -397,4 +398,107 @@ test('client type vs Client ID: switching the type without replacing the ID is f
     S.set('client_id', 'new-desktop.apps.googleusercontent.com'); drive.noteClientId({ id: 'old-tv.apps.googleusercontent.com', type: 'desktop' }, { id: 'new-desktop.apps.googleusercontent.com', type: 'desktop' });
     assert.strictEqual(drive.idTypeMismatch(), ''); assert.doesNotThrow(() => drive.startLink()); drive.cancelLink();
   } finally { keep.forEach(([k, v]) => S.set(k, v || '')); drive.cancelLink(); }
+});
+
+// ---------- edit / delete / clear all: Drive + Calendar stay in step, nothing is duplicated or left behind
+const calOn = () => { const g = gcal(); g.S.set('cal_on', '1'); g.S.set('cal_mode', 'auto'); g.S.set('cal_name', 'KPI EODs'); g.S.del('cal_auto_id'); g.S.del('cal_auto_name'); return g; };
+const names = (s, pred) => tree(s).filter(pred);
+
+test('editing an EOD (job + date change): same folder moved/renamed, PDF + receipts replaced, same event moved; no duplicates; old day folder tidied', async () => {
+  await mock('/mock/reset'); freshOauth(); await reconnect(); calOn();
+  const files = [fakeUpload('lunch.jpg', 2000, 'image/jpeg', '1'), fakeUpload('gas.jpg', 3000, 'image/jpeg', '2')];
+  const id = store.create(store.normalise(body({ job: 'Gala', date: '2026-11-13' })), files, 'Jason');
+  drive.enqueue(id); await drive.runOnce();
+  let s = await state();
+  const de = db.prepare('SELECT * FROM drive_entries WHERE entry_id=?').get(id); const ce = db.prepare('SELECT * FROM cal_entries WHERE entry_id=?').get(id);
+  assert.ok(de.folder_id && de.pdf_id && ce.event_id);
+  assert.strictEqual(s.events.length, 1); assert.deepStrictEqual(s.events[0].start, { date: '2026-11-13' });
+
+  // change the date (other MONTH), rename the job, drop one receipt, add one
+  const e = store.get(id); const gas = e.receipts.find((r) => r.original === 'gas.jpg');
+  const exps = e.expenses.map((x) => ({ id: x.id, key: String(x.id), description: x.description, category: x.category, amount: String(x.amount), paid_by: x.paid_by }));
+  store.update(id, store.normalise(body({ job: 'Gala night', date: '2026-12-02', expenses: exps })), [fakeUpload('new.jpg', 1500, 'image/jpeg', String(exps[0].id))], [gas.id]);
+  drive.enqueue(id); await drive.runOnce();
+  s = await state();
+  const jobFolders = s.files.filter((f) => /^Gala/.test(f.name) && f.mimeType === 'application/vnd.google-apps.folder');
+  assert.strictEqual(jobFolders.length, 1, 'one job folder, not two'); assert.strictEqual(jobFolders[0].id, de.folder_id, 'the same folder was moved + renamed');
+  const live = tree(s);
+  assert.ok(live.includes('EOD Log/2026/12 December/2026-12-02/Gala night (Film shoot)/EOD 2026-12-02 Gala night.pdf'));
+  assert.strictEqual(live.filter((x) => x.endsWith('EOD 2026-12-02 Gala night.pdf')).length, 1, 'one PDF');
+  assert.ok(!live.some((x) => /2026-11-13|11 November/.test(x)), 'old day + month folders were tidied: ' + live.join('\n'));
+  const receipts = live.filter((x) => /\.jpg$/.test(x)); assert.strictEqual(receipts.length, 2, 'lunch + new (gas removed): ' + receipts.join('\n'));
+  assert.ok(receipts.every((x) => x.includes('/2026-12-02 Gala night - ')), 'receipts renamed for the new date/job');
+  assert.ok(s.files.find((f) => f.name.includes('(Card)') && f.name.endsWith('.jpg')).inTrash, 'removed receipt trashed');
+  assert.strictEqual(s.files.find((f) => f.id === de.pdf_id).versions, 2, 'same PDF file, new version');
+  // calendar: the same event, now on the new day
+  assert.strictEqual(s.events.length, 1, 'no duplicate event'); assert.strictEqual(s.events[0].id, ce.event_id);
+  assert.deepStrictEqual([s.events[0].start, s.events[0].end], [{ date: '2026-12-02' }, { date: '2026-12-03' }]); assert.strictEqual(s.events[0].summary, 'Gala night (Film shoot) – EOD');
+  // editing again with nothing changed adds nothing
+  const n0 = s.files.length; drive.enqueue(id); await drive.runOnce(); s = await state();
+  assert.strictEqual(s.files.length, n0, 'no new files'); assert.strictEqual(s.events.length, 1);
+  // two edits queued back to back are still one folder / one event
+  store.update(id, store.normalise(body({ job: 'Gala night', date: '2026-12-03', expenses: exps })), [], []); drive.enqueue(id);
+  store.update(id, store.normalise(body({ job: 'Gala night', date: '2026-12-04', expenses: exps })), [], []); drive.enqueue(id); await drive.runOnce();
+  s = await state(); assert.strictEqual(s.files.filter((f) => /^Gala/.test(f.name) && f.mimeType === 'application/vnd.google-apps.folder').length, 1);
+  assert.strictEqual(s.events.length, 1); assert.deepStrictEqual(s.events[0].start, { date: '2026-12-04' });
+  assert.ok(!tree(s).some((x) => /2026-12-02|2026-12-03/.test(x)), 'stale day folders tidied');
+
+  // delete: folder trashed (recoverable), event deleted, every emptied parent tidied, only the root folder is left
+  drive.onDelete(id); store.remove(id); await drive.runOnce();
+  s = await state(); assert.deepStrictEqual(tree(s), ['EOD Log']); assert.strictEqual(s.events.length, 0);
+  assert.ok(s.files.find((f) => f.name.startsWith('Gala night')).inTrash, 'trashed, not permanently deleted');
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM drive_folders').get().n, 0); assert.strictEqual(drive.status().cleanup, 0);
+});
+
+test('Clear all data + Google: every job folder is trashed, every event deleted, empty day/month/year folders tidied; retried when Google fails', async () => {
+  await mock('/mock/reset'); freshOauth(); await reconnect(); calOn();
+  const mk = (job, date, n) => store.create(store.normalise(body({ job, date })), [fakeUpload('a.jpg', 1000 + n, 'image/jpeg', '1'), fakeUpload('b.jpg', 2000 + n, 'image/jpeg', '2')], 'Jason');
+  const ids = [mk('Alpha', '2026-11-13', 1), mk('Beta', '2026-11-13', 2), mk('Gamma', '2026-12-01', 3), mk('Delta', '2025-12-30', 4)];
+  const g = gcal(); g.enqueueAll(); ids.forEach((i) => drive.enqueue(i)); await drive.runOnce();
+  let s = await state(); assert.strictEqual(s.events.length, 4); assert.strictEqual(s.files.filter((f) => f.mimeType === 'application/vnd.google-apps.folder').length, 1 + 2 + 3 + 3 + 4, 'tree built: root, 2 years, 3 months, 3 days, 4 jobs');
+  const queuedNotSynced = mk('Epsilon', '2026-11-14', 5); drive.enqueue(queuedNotSynced); // queued but never synced: must not be uploaded after the clear
+
+  // what the Settings "Clear all data" does, with "Also remove from Google" ticked (an outage first: the first Google calls fail)
+  await mock('/mock/fail?n=3&status=503&reason=backendError');
+  db.transaction(() => { db.exec('DELETE FROM receipts; DELETE FROM expenses; DELETE FROM crew; DELETE FROM entries;'); drive.clearAll(); })();
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM drive_entries WHERE pending_delete=1').get().n, 4, 'folder ids survive the wipe in the cleanup queue');
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM cal_entries WHERE pending_delete=1').get().n, 4, 'event ids survive too');
+  for (let i = 0; i < 12 && (drive.status().cleanup > 0); i++) { await drive.runOnce(); await sleep(120); }
+  s = await state();
+  assert.strictEqual(drive.status().cleanup, 0, 'cleanup finished after retries');
+  assert.strictEqual(s.events.length, 0, 'all events deleted'); assert.deepStrictEqual(tree(s), ['EOD Log'], 'only the root folder is left: ' + tree(s).join(' | '));
+  assert.ok(s.files.filter((f) => /^(Alpha|Beta|Gamma|Delta)/.test(f.name)).every((f) => f.inTrash), 'job folders are in the Drive trash (recoverable)');
+  assert.strictEqual(s.files.some((f) => /Epsilon/.test(f.name)), false, 'a queued-but-unsynced EOD is not uploaded after the clear');
+  for (const t of ['drive_entries', 'drive_files', 'drive_queue', 'drive_folders', 'cal_entries', 'cal_queue']) assert.strictEqual(db.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n, 0, t);
+  // new EODs after the clear (ids restart at 1) build a fresh tree
+  const again = mk('Zeta', '2026-11-13', 6); drive.enqueue(again); await drive.runOnce();
+  assert.ok(tree(await state()).includes('EOD Log/2026/11 November/2026-11-13/Zeta (Film shoot)/EOD 2026-11-13 Zeta.pdf'));
+
+  // Clear all data WITHOUT the Google box: Google keeps everything
+  const before = (await state()); const nf = tree(before).length, ne = before.events.length;
+  db.transaction(() => { db.exec('DELETE FROM receipts; DELETE FROM expenses; DELETE FROM crew; DELETE FROM entries;'); drive.forgetEntries(); })();
+  await drive.runOnce(); const after = await state(); assert.strictEqual(tree(after).length, nf); assert.strictEqual(after.events.length, ne);
+});
+
+test('service account (Shared Drive): delete + tidy-up send supportsAllDrives (else the Shared Drive items are invisible)', async () => {
+  await mock('/mock/reset');
+  const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const shared = (await mock('/mock/folder?name=KPI%20Shared%20EODs')).id;
+  drive.S.set('mode', 'sa'); drive.resetToken(); drive.resetMapping(); db.exec('DELETE FROM entries');
+  drive.S.set('sa_json', JSON.stringify({ type: 'service_account', client_email: 'eod@proj.iam.gserviceaccount.com', private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }) }));
+  drive.S.set('shared_folder_id', shared);
+  const g = gcal(); g.S.set('cal_on', '1'); g.S.set('cal_mode', 'paste'); const cal = (await mock('/mock/calendar?name=EOD%20Log&sa=1')).id; g.S.set('cal_paste_id', cal);
+  const a = store.create(store.normalise(body({ job: 'SA one', date: '2026-11-13' })), [fakeUpload('a.jpg', 900, 'image/jpeg', '1')], 'Jason');
+  const b = store.create(store.normalise(body({ job: 'SA two', date: '2026-11-14' })), [], 'Jason');
+  drive.enqueue(a); drive.enqueue(b); await drive.runOnce();
+  let s = await state(); assert.strictEqual(s.events.length, 2);
+  // edit with a date change: the old day folder is tidied (needs files.list with supportsAllDrives + includeItemsFromAllDrives)
+  store.update(a, store.normalise(body({ job: 'SA one', date: '2026-11-20', expenses: [] })), [], []); drive.enqueue(a); await drive.runOnce();
+  s = await state(); assert.ok(!tree(s).some((x) => x.includes('2026-11-13')), 'old day folder tidied in a Shared Drive: ' + tree(s).join(' | ')); assert.ok(tree(s).some((x) => x.includes('2026-11-20/SA one')));
+  // delete one, then clear the rest
+  drive.onDelete(a); store.remove(a); await drive.runOnce();
+  assert.ok(!tree(await state()).some((x) => x.includes('SA one')));
+  db.transaction(() => { db.exec('DELETE FROM receipts; DELETE FROM expenses; DELETE FROM crew; DELETE FROM entries;'); drive.clearAll(); })();
+  await drive.runOnce(); s = await state();
+  assert.deepStrictEqual(tree(s), ['KPI Shared EODs'], 'the user\'s shared folder itself stays'); assert.strictEqual(s.events.length, 0); assert.strictEqual(drive.status().cleanup, 0);
 });

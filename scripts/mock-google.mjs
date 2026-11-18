@@ -147,6 +147,14 @@ export function startMock(port = Number(process.env.PORT || 8090)) {
     }
     if (p === '/drive/v3/about') return send(res, 200, { user: { emailAddress: 'jason@kpi.example', displayName: 'Jason' } });
     let m;
+    // like Google: a service account (Shared Drive) must send supportsAllDrives=true on every file call, or the file "doesn't exist" for it (and lists come back empty)
+    if (who.kind === 'sa' && /^\/(upload\/)?drive\/v3\/files(\/[^/]+)?$/.test(p) && u.searchParams.get('supportsAllDrives') !== 'true') return req.method === 'GET' && p === '/drive/v3/files' ? send(res, 200, { files: [] }) : gErr(res, 404, 'notFound', 'File not found (missing supportsAllDrives).');
+    if (req.method === 'GET' && p === '/drive/v3/files') { // files.list: only the `'<id>' in parents and trashed=false` query the app uses
+      const mq = /'([^']+)' in parents/.exec(u.searchParams.get('q') || ''); if (!mq) return gErr(res, 400, 'invalid', 'Invalid Value');
+      if (who.kind === 'sa' && u.searchParams.get('includeItemsFromAllDrives') !== 'true') return send(res, 200, { files: [] });
+      const files = Object.values(st.files).filter((f) => (f.parents || [])[0] === mq[1] && !f.trashed).slice(0, Number(u.searchParams.get('pageSize') || 100)).map((f) => ({ id: f.id, name: f.name }));
+      return send(res, 200, { files });
+    }
     if (req.method === 'POST' && p === '/drive/v3/files') { const f = create(JSON.parse(buf.toString())); return f ? send(res, 200, pick(f)) : gErr(res, 404, 'notFound', 'File not found (parent).'); }
     if ((m = /^\/upload\/drive\/v3\/files(?:\/([^/]+))?$/.exec(p))) {
       const type = u.searchParams.get('uploadType');

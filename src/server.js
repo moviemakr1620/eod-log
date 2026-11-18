@@ -258,7 +258,11 @@ async function backupDb() {
   old.slice(0, Math.max(0, old.length - 3)).forEach((f) => fs.rmSync(path.join(BACKUP_DIR, f), { force: true }));
   return file;
 }
-const clearPage = (req, res, extra = {}, status = 200) => send(res, views.clearPage(req, { stats: dataStats(), needPw: auth.adminConfigured(), ...extra }), status);
+const googleStats = () => ({
+  connected: drive.connected(), folders: db.prepare('SELECT COUNT(*) n FROM drive_entries WHERE folder_id IS NOT NULL').get().n,
+  events: db.prepare('SELECT COUNT(*) n FROM cal_entries WHERE event_id IS NOT NULL').get().n, calOn: gcal.status().on,
+});
+const clearPage = (req, res, extra = {}, status = 200) => send(res, views.clearPage(req, { stats: dataStats(), needPw: auth.adminConfigured(), google: googleStats(), removeGoogle: req.method === 'POST' ? req.body.google === '1' : true, ...extra }), status);
 app.get('/settings/clear', requireAdmin, (req, res) => clearPage(req, res));
 app.post('/settings/clear', requireAdmin, async (req, res) => {
   const scope = req.body.scope === 'all' ? 'all' : 'entries';
@@ -269,6 +273,7 @@ app.post('/settings/clear', requireAdmin, async (req, res) => {
     if (!auth.checkAdmin(req.body.password)) { auth.recordFail(req.ip); return clearPage(req, res, { scope, error: 'Nothing was deleted. Wrong admin password.' }, 401); }
   }
   const before = dataStats();
+  const removeGoogle = req.body.google === '1' && drive.connected();
   let backup;
   try { backup = await backupDb(); } catch (err) {
     console.error('[eod-log] backup before clear failed', err);
@@ -277,15 +282,16 @@ app.post('/settings/clear', requireAdmin, async (req, res) => {
   db.transaction(() => {
     db.exec('DELETE FROM receipts; DELETE FROM expenses; DELETE FROM crew; DELETE FROM entries;');
     if (scope === 'all') db.exec("DELETE FROM sends; DELETE FROM schedules; DELETE FROM settings WHERE substr(key,1,3) <> 'gd_';"); // Google Drive connection is kept
-    drive.forgetEntries(); // entry ids restart, so forget the id -> Drive file mapping (files in Drive are NOT deleted)
+    if (removeGoogle) drive.clearAll(); else drive.forgetEntries(); // entry ids restart: either queue every Drive folder + Calendar event for removal, or just forget the id -> Google mapping (Google keeps everything)
   })();
+  if (removeGoogle) drive.kick();
   let files = [];
   try { files = fs.readdirSync(cfg.UPLOAD_DIR); } catch { /* none */ }
   files.forEach((f) => fs.rmSync(path.join(cfg.UPLOAD_DIR, f), { force: true, recursive: true }));
   db.pragma('wal_checkpoint(TRUNCATE)');
   db.exec('VACUUM');
   console.log(`[eod-log] data cleared (${scope}) by ${(req.session && req.session.n) || 'admin'}: ${before.entries} entries, ${before.receipts} receipts; backup ${backup}`);
-  const msg = `Cleared ${before.entries} EOD${before.entries === 1 ? '' : 's'} and ${before.receipts} receipt${before.receipts === 1 ? '' : 's'}${scope === 'all' ? ', plus notifications and settings' : ''}. A database backup was saved as backups/${path.basename(backup)}.`;
+  const msg = `Cleared ${before.entries} EOD${before.entries === 1 ? '' : 's'} and ${before.receipts} receipt${before.receipts === 1 ? '' : 's'}${scope === 'all' ? ', plus notifications and settings' : ''}. ${removeGoogle ? ' Their Drive folders (moved to the Drive trash, recoverable for 30 days) and Calendar events are being removed in the background.' : ''} A database backup was saved as backups/${path.basename(backup)}.`;
   res.redirect(303, '/settings?msg=' + encodeURIComponent(msg));
 });
 
@@ -318,8 +324,7 @@ app.post('/settings/drive/save', requireAdmin, async (req, res) => {
   if (b.client_type === 'tv' || b.client_type === 'desktop') drive.S.set('client_type', b.client_type);
   drive.noteClientId(idBefore, { id: drive.S.get('client_id') || '', type: drive.clientType() });
   const rn = str(b.root_name, 100); if (rn) drive.S.set('root_name', rn);
-  drive.S.set('on_delete', b.on_delete === 'trash' ? 'trash' : 'mark');
-  drive.S.set('auto', b.auto === '1' ? '1' : '0');
+    drive.S.set('auto', b.auto === '1' ? '1' : '0');
   const emails = mailer.parseList(b.share);
   const role = b.share_role === 'writer' ? 'writer' : 'reader';
   let warn = '';

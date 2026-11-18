@@ -32,7 +32,7 @@ Built for film shoots, AV installs and live events. Mobile first: big tap target
 - **Google Calendar** (Settings → Google Calendar, admin, optional): one event per EOD on its own calendar, with the crew, hours and expenses in the description and the EOD PDF attached. See [Google Calendar setup](#google-calendar-setup).
 - **Light / dark mode.** A sun/moon button sits in the header of every page (and top-right on the sign-in page). It starts with the device's own setting (`prefers-color-scheme`), the button switches it, and the choice is remembered per device in `localStorage`. `public/theme.js` is a small blocking script in `<head>` (not inline, because the CSP only allows scripts from the app itself) so the right theme is set before the first paint, with no flash. It also sets `color-scheme` (native date/time pickers and form controls match) and the `theme-color` meta. Summary emails and PDFs are unaffected, and the email preview shows the email itself on white. `scripts/contrast.mjs` checks text contrast on every main page in both themes.
 - **CSV export** of hours (one row per person per day, with `total_hours` and `on_set_hours` columns) and expenses, for payroll or spreadsheets.
-- **Clear all data (admin only).** Settings → *Danger zone* → **Clear all data…** shows how many EODs, receipts and MB will go, links the CSV exports, and needs you to type `DELETE` plus the admin password. By default it deletes all EODs, expenses, receipts and uploaded files and keeps notifications; you can also choose to reset notifications, settings and the log. Before clearing it saves a database copy to `/data/backups/` (last 3 kept; receipt files are not included), then compacts the database.
+- **Clear all data (admin only).** Settings → *Danger zone* → **Clear all data…** shows how many EODs, receipts and MB will go, links the CSV exports, and needs you to type `DELETE` plus the admin password. By default it deletes all EODs, expenses, receipts and uploaded files and keeps notifications; you can also choose to reset notifications, settings and the log. Before clearing it saves a database copy to `/data/backups/` (last 3 kept; receipt files are not included), then compacts the database. If Google is connected, a checkbox **Also remove from Google Drive and Calendar** (ticked by default) also clears Google, see [Deleting and clearing](#deleting-editing-and-clearing-in-google).
 
 ### How hours are counted
 
@@ -199,8 +199,7 @@ EOD Log/                                   <- the app creates this; share it fro
 - Each job gets its own folder holding that job's PDF and receipts. Two EODs for the same job on the same day get `#2` on the second folder.
 - **Upgrading:** the first start after the update moves every EOD already in Drive to this layout on the next sync. Folders are moved or renamed, never copied, so nothing is duplicated and sharing stays as it was. The old `2026-11 November` folder is renamed in place to `11 November`.
 - New EODs upload automatically. Editing one replaces the PDF in place (Drive keeps the old versions), renames or moves the folder if the job or date changed, uploads new receipts and trashes removed ones.
-- Deleting an EOD in the app renames its Drive folder to `(deleted) …` (or moves it to the trash, if you pick that).
-- **Clear all data never deletes anything in Drive.**
+- Deleting, editing and clearing are covered in [Deleting, editing and clearing in Google](#deleting-editing-and-clearing-in-google) below.
 - Uploads happen in the background. A failed upload is retried with backoff (30 s, 1 min, 2 min … up to 6 h), and Settings → Google Drive shows what's waiting or failing. **Sync all EODs** uploads everything already in the app. **Test** checks the folder.
 - “Share the folder with” adds those people to the folder (view or edit) and Google emails them a link. You can also share it from Drive like any folder.
 
@@ -246,6 +245,24 @@ Use this if you'd rather the files belong to a Shared Drive than to one person. 
 4. In EOD Log, **Settings → Google Drive**: choose **A service account + a Shared Drive**, paste the whole JSON key and the folder link, then **Save** and **Test**. (Or put the key file in `/data` and set `GDRIVE_SA_FILE=/data/sa.json`.) Some organizations block service-account keys by policy (`iam.disableServiceAccountKeyCreation`); then use Option A.
 5. For Calendar in this mode, see below: a service account has no calendar of its own, so you share one with it.
 
+## Deleting, editing and clearing in Google
+
+Drive and Calendar follow what happens in the app. Everything runs in the background and is **retried with backoff** if Google is unreachable (the work is kept in the database, so a restart doesn't lose it), and Settings → Google Drive shows what's waiting.
+
+| In the app | Google Drive | Google Calendar |
+|---|---|---|
+| **Edit** an EOD (any field, including date or job name) | The same job folder is renamed, or moved to the new day (and month/year) folder if the date changed. The PDF is replaced in place (Drive keeps old versions), new receipts are added, removed ones and old names are cleaned up. No second folder is made. A day, month or year folder left empty is tidied up. | The same event is patched and moved to the new day. No second event. |
+| **Delete** one EOD | Its job folder (PDF + receipts) is moved to the **Drive trash**, which Google keeps for **30 days**, so it can be restored. Emptied day, month and year folders are tidied up too. No more `(deleted)` renaming. | Its event is deleted. |
+| **Clear all data** with **Also remove from Google Drive and Calendar** ticked (default) | Every job folder the app made goes to the Drive trash (30 days), then every empty day/month/year folder. The main `EOD Log` folder (or your Shared Drive folder) and its sharing stay. | Every event the app made is deleted. The calendar itself stays (events only). |
+| **Clear all data** with the box unticked | Google keeps everything. | Google keeps everything. |
+
+Notes:
+- The database backup that "Clear all data" makes always stays.
+- The cleanup list (folder and event IDs) is saved *before* the data is wiped and survives the wipe, so nothing is forgotten even if Google is down at that moment or the app restarts.
+- Trash, not permanent delete, is used everywhere in Drive. Shared Drives (service-account mode) are handled with `supportsAllDrives`; the service account needs to be a **Content manager** to trash files there.
+- The app only looks inside folders it made, but under the `drive.file` permission it can only *see* files it created. If someone adds their own file into one of the app's day/month/year folders, the app can't see it and may trash that folder when it looks empty (the file is then in the trash for 30 days). Keep your own files outside the app's folders.
+- With Calendar switched off, events already made are still removed when you delete or clear.
+
 ## Google Calendar setup
 
 | ![calendar settings](preview/17-calendar-settings.png) | ![calendar on](preview/18-calendar-on.png) | ![settings](preview/19-settings-with-calendar-full.png) |
@@ -257,7 +274,7 @@ Optional. Every EOD becomes **one event** on a dedicated calendar (not your pers
 - **Time:** always an **all-day event** on the EOD's date, so the day reads as a clean list and events never overlap. The crew's time range is the first line of the description, e.g. `Crew times 7:00am–6:30pm` (earliest Start to latest Stop; `(+1 day)` when it runs past midnight; left out if nobody has times).
 - **Description:** client, location and crew chief; each person's times, meals, on-set hours and total hours; totals (total hours, on-set hours); expenses with who paid; vehicle and miles; media; notes; and a link back to the EOD in this app (uses `PUBLIC_URL`, so set it to the address people really use).
 - **Attachment:** the EOD PDF from Drive. People need access to the Drive file to open it, so share the Drive folder and the calendar with the same people.
-- Editing an EOD updates the same event, and an event an earlier version made as a timed one is converted to all-day in place. Deleting one removes the event, or titles it `(deleted) …`, to match what you chose for Drive. If someone deletes the event by hand, the next sync recreates it. **Clear all data never touches the calendar.**
+- Editing an EOD updates the same event, and an event an earlier version made as a timed one is converted to all-day in place. Deleting one deletes the event. If someone deletes the event by hand, the next sync recreates it.
 - It runs in the background after the PDF is uploaded, with the same retry queue as Drive (the Calendar feature needs Drive switched on).
 
 **OAuth mode (Option A)**
@@ -324,8 +341,8 @@ npm test             # unit tests (hours maths, Google Drive and Calendar sync a
 
 ## Testing
 
-- `npm test`: unit tests for `public/hours.js` (total and on-set hours) and the Google Drive and Calendar sync (`test/drive.test.js`, run against `scripts/mock-google.mjs`, a small fake of the Google sign-in, Drive and Calendar endpoints, including the rule that the device sign-in refuses Calendar: names, device sign-in, uploads including big resumable ones, edits, moves, retries, deletes, sharing, service-account mode, the folder-layout move, Calendar events with the PDF attached). Hours tests cover start/stop, optional meals, overnight, travel times ignored, typed-in hours, and time formats such as `07:30:00` and `7:30 PM`.
-- `scripts/e2e.mjs`: about 120 end-to-end checks against a running server. It signs in, creates entries with several crew on separate hours and with receipts, then checks the week and list views, search and filters, editing, deleting receipts, admin-only actions, settings, CSV, the preview Back button and Clear all data (wrong confirmation, non-admin and cross-site attempts blocked). Set `DOCKER_EXEC='docker exec eod-log'` to also check that upload files are deleted and backups are written. With `GMOCK=` pointing at `scripts/mock-google.mjs` (and the server started with the test-only `GDRIVE_API_BASE` / `GDRIVE_OAUTH_BASE` pointing at it), it also runs the Google Drive flow: connect, share, sync, retry, delete, and the Calendar flow (reconnect notice, connect, Test, Sync all, create/edit/delete events).
+- `npm test`: unit tests for `public/hours.js` (total and on-set hours) and the Google Drive and Calendar sync (`test/drive.test.js`, run against `scripts/mock-google.mjs`, a small fake of the Google sign-in, Drive and Calendar endpoints, including the rule that the device sign-in refuses Calendar: names, device sign-in, uploads including big resumable ones, edits, moves, retries, deletes, sharing, service-account mode, the folder-layout move, Calendar events with the PDF attached). Drive/Calendar tests also cover edit with a date change (no duplicate folders or events), delete (trash + tidy-up), and Clear all data cleanup with retries, in OAuth and service-account modes. Hours tests cover start/stop, optional meals, overnight, travel times ignored, typed-in hours, and time formats such as `07:30:00` and `7:30 PM`.
+- `scripts/e2e.mjs`: about 145 end-to-end checks against a running server. It signs in, creates entries with several crew on separate hours and with receipts, then checks the week and list views, search and filters, editing, deleting receipts, admin-only actions, settings, CSV, the preview Back button and Clear all data (wrong confirmation, non-admin and cross-site attempts blocked). Set `DOCKER_EXEC='docker exec eod-log'` to also check that upload files are deleted and backups are written. With `GMOCK=` pointing at `scripts/mock-google.mjs` (and the server started with the test-only `GDRIVE_API_BASE` / `GDRIVE_OAUTH_BASE` pointing at it), it also runs the Google Drive flow: connect, share, sync, retry, delete, and the Calendar flow (reconnect notice, connect, Test, Sync all, create/edit/delete events).
   With `MAILPIT=` set, it also sends the summary to a [Mailpit](https://github.com/axllent/mailpit) catcher and checks the email, including attached receipts.
   `BASE=http://127.0.0.1:7240 APP_PASSWORD=... ADMIN_PASSWORD=... MAILPIT=http://127.0.0.1:8025 node scripts/e2e.mjs`
 - `scripts/screenshots.mjs`: phone-size (390×844) screenshots into `preview/`. It needs `puppeteer-core` installed outside the project and Chrome.

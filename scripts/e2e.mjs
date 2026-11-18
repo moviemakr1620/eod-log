@@ -192,15 +192,15 @@ if (MAILPIT) {
 
 // Google Drive (against the fake Google server)
 let driveFilesBeforeClear = 0, calEventsBeforeClear = 0;
+const gm = async (p, method = 'POST') => (await fetch(GMOCK + p, { method })).json();
+const tree = (st) => { const by = Object.fromEntries(st.files.map((f) => [f.id, f])); const full = (f) => (f.parents && by[f.parents[0]] ? full(by[f.parents[0]]) + '/' : '') + f.name; return st.files.filter((f) => !f.inTrash).map(full).sort(); };
+const waitFor = async (fn, ms = 15000) => { const t = Date.now(); while (Date.now() - t < ms) { if (await fn()) return true; await new Promise((r) => setTimeout(r, 400)); } return false; };
 if (GMOCK) {
-  const gm = async (p, method = 'POST') => (await fetch(GMOCK + p, { method })).json();
-  const tree = (st) => { const by = Object.fromEntries(st.files.map((f) => [f.id, f])); const full = (f) => (f.parents && by[f.parents[0]] ? full(by[f.parents[0]]) + '/' : '') + f.name; return st.files.filter((f) => !f.inTrash).map(full).sort(); };
-  const waitFor = async (fn, ms = 15000) => { const t = Date.now(); while (Date.now() - t < ms) { if (await fn()) return true; await new Promise((r) => setTimeout(r, 400)); } return false; };
   await gm('/mock/reset');
   await req('/login', { who: 'team2', method: 'POST', body: new URLSearchParams({ name: 'Crew', password: process.env.APP_PASSWORD }) });
   r = await req('/settings/drive', { who: 'team2' }); ok(r.status === 303 && /admin-login/.test(r.headers.get('location')), 'non-admin cannot open Drive settings');
   h = await text(await req('/settings/drive')); ok(h.includes('Not connected') && h.includes('TVs and Limited Input devices') && h.includes('Desktop app'), 'Drive page: not connected, asks for an OAuth client (Desktop app or TV type)');
-  r = await req('/settings/drive/save', { method: 'POST', body: new URLSearchParams({ mode: 'oauth', client_type: 'tv', client_id: 'test-client.apps.googleusercontent.com', client_secret: 'test-secret', root_name: 'KPI EOD Log', auto: '1', on_delete: 'mark', share: 'producer@kpi.example', share_role: 'reader' }) });
+  r = await req('/settings/drive/save', { method: 'POST', body: new URLSearchParams({ mode: 'oauth', client_type: 'tv', client_id: 'test-client.apps.googleusercontent.com', client_secret: 'test-secret', root_name: 'KPI EOD Log', auto: '1', share: 'producer@kpi.example', share_role: 'reader' }) });
   ok(r.status === 303 && /after%20you%20connect/.test(r.headers.get('location')), 'save OAuth client (sharing deferred until connected)');
   h = await text(await req('/settings/drive')); ok(!h.includes('test-secret') && h.includes('saved: leave blank to keep') && h.includes('Connect Google Drive'), 'client secret is never shown back');
   r = await req('/settings/drive/connect', { method: 'POST' }); ok(r.status === 303, 'start device sign-in');
@@ -231,9 +231,10 @@ if (GMOCK) {
   ok(r.status === 303, 'saving an EOD does not wait for Drive (even while Drive fails)');
   ok(await waitFor(async () => tree(await gm('/mock/state', 'GET')).some((x) => x.endsWith('Drive retry check (AV install)')), 20000), 'new EOD reaches Drive after a retry');
   r = await req(`/e/${idDrive}/delete`, { method: 'POST' });
-  ok(await waitFor(async () => tree(await gm('/mock/state', 'GET')).some((x) => x.endsWith('/(deleted) Drive retry check (AV install)'))), 'deleted EOD: Drive folder kept, renamed "(deleted)"');
+  ok(await waitFor(async () => !tree(await gm('/mock/state', 'GET')).some((x) => x.includes('Drive retry check (AV install)'))), 'deleted EOD: its Drive folder is gone from the tree (moved to the trash)');
+  { const stz = await gm('/mock/state', 'GET'); ok(stz.files.some((f) => f.name === 'Drive retry check (AV install)' && f.inTrash) && !stz.files.some((f) => f.name.startsWith('(deleted)')), 'deleted EOD: folder is in the Drive trash (recoverable), not renamed "(deleted)"'); }
   h = await text(await req('/settings')); ok(h.includes('Google Drive') && h.includes('jason@kpi.example'), 'Settings shows the Drive status');
-  h = await text(await req('/settings/clear')); ok(h.includes('Google Drive are <b>not</b> deleted'), 'clear page says Drive copies are kept');
+  h = await text(await req('/settings/clear')); ok(h.includes('name="google"') && /name="google" value="1" checked/.test(h) && h.includes('Also remove from Google Drive and Calendar') && h.includes('Drive trash') && h.includes('30 days'), 'clear page: "Also remove from Google Drive and Calendar" is ticked by default and explains the 30-day trash');
 
   // ---- Google Calendar
   const CAL = 'https://www.googleapis.com/auth/calendar';
@@ -248,11 +249,11 @@ if (GMOCK) {
   r = await req('/settings/calendar/test', { method: 'POST' }); ok(/Test%20failed.*Reconnect/.test(r.headers.get('location')), 'Test says to reconnect');
   ok(!((await gm('/mock/state', 'GET')).calls.some((c) => c.includes('/calendar/'))), 'no Calendar API calls were made without the scope');
   // switch to a Desktop-app client and connect by pasting the address
-  r = await req('/settings/drive/save', { method: 'POST', body: new URLSearchParams({ mode: 'oauth', client_type: 'desktop', client_id: 'test-client.apps.googleusercontent.com', root_name: 'KPI EOD Log', auto: '1', on_delete: 'mark', share: '', share_role: 'reader' }) });
+  r = await req('/settings/drive/save', { method: 'POST', body: new URLSearchParams({ mode: 'oauth', client_type: 'desktop', client_id: 'test-client.apps.googleusercontent.com', root_name: 'KPI EOD Log', auto: '1', share: '', share_role: 'reader' }) });
   ok(/Heads%20up/.test(r.headers.get('location')), 'switching the type but keeping the same Client ID warns');
   h = await text(await req('/settings/drive')); ok(h.includes("doesn't match the client type"), 'Drive page shows the client-type mismatch notice');
   r = await req('/settings/drive/connect', { method: 'POST' }); ok(/err=.*invalid_request/.test(decodeURIComponent(r.headers.get('location'))), 'Connect refuses (instead of sending Google a TV client with a loopback redirect)');
-  r = await req('/settings/drive/save', { method: 'POST', body: new URLSearchParams({ mode: 'oauth', client_type: 'desktop', client_id: 'desktop-client.apps.googleusercontent.com', client_secret: 'desktop-secret', root_name: 'KPI EOD Log', auto: '1', on_delete: 'mark', share: '', share_role: 'reader' }) });
+  r = await req('/settings/drive/save', { method: 'POST', body: new URLSearchParams({ mode: 'oauth', client_type: 'desktop', client_id: 'desktop-client.apps.googleusercontent.com', client_secret: 'desktop-secret', root_name: 'KPI EOD Log', auto: '1', share: '', share_role: 'reader' }) });
   ok(/msg=Saved/.test(r.headers.get('location')) && !/Heads%20up/.test(r.headers.get('location')), 'pasting a new Client ID clears the warning');
   r = await req('/settings/drive/connect', { method: 'POST' }); ok(r.status === 303, 'start the paste-the-address sign-in');
   h = await text(await req('/settings/drive'));
@@ -285,8 +286,16 @@ if (GMOCK) {
   const evC = (await calEvents()).find((x) => x.summary === 'Calendar check (Live event) – EOD');
   r = await req(`/e/${idCal}/edit`, { method: 'POST', body: entryForm({ fields: { job: 'Calendar check', date: today, job_type: 'Live event', notes: 'Edited for calendar' }, crew: [{ name: 'Jason', start: '09:00', stop: '14:30' }] }) });
   ok(await waitFor(async () => { const e2 = (await calEvents()).filter((x) => x.summary === 'Calendar check (Live event) – EOD'); return e2.length === 1 && e2[0].id === evC.id && e2[0].start.date === today && !e2[0].start.dateTime && e2[0].description.startsWith('Crew times 9:00am–2:30pm') && e2[0].description.includes('Edited for calendar'); }, 20000), 'editing the EOD updates the same event (no duplicate)');
+  // edit that CHANGES THE DATE (and the job name): the same event + the same Drive folder move; nothing is duplicated; stale pieces are gone
+  const folderIdsOf = (stx, re) => stx.files.filter((f) => re.test(f.name) && !f.inTrash && f.mimeType === 'application/vnd.google-apps.folder').map((f) => f.id);
+  const f0 = folderIdsOf(await gm('/mock/state', 'GET'), /^Calendar check \(Live event\)$/); ok(f0.length === 1, 'one Drive job folder before the date change');
+  r = await req(`/e/${idCal}/edit`, { method: 'POST', body: entryForm({ fields: { job: 'Calendar moved', date: '2025-03-03', job_type: 'Live event', notes: 'Moved day' }, crew: [{ name: 'Jason', start: '10:00', stop: '15:00' }] }) });
+  ok(await waitFor(async () => { const e3 = (await calEvents()).filter((x) => /^Calendar (check|moved) /.test(x.summary)); return e3.length === 1 && e3[0].id === evC.id && e3[0].summary === 'Calendar moved (Live event) – EOD' && e3[0].start.date === '2025-03-03' && e3[0].end.date === '2025-03-04' && !e3[0].start.dateTime; }, 20000), 'date change: the SAME calendar event moves to the new day (no duplicate, old one not left behind)');
+  ok(await waitFor(async () => { const stm = await gm('/mock/state', 'GET'); const f1 = folderIdsOf(stm, /^Calendar (check|moved) \(Live event\)$/); return f1.length === 1 && f1[0] === f0[0] && tree(stm).some((x) => x.endsWith('2025/03 March/2025-03-03/Calendar moved (Live event)/EOD 2025-03-03 Calendar moved.pdf')); }, 20000), 'date change: the SAME Drive folder moved to 2025/03 March/2025-03-03 and renamed, with a single PDF');
+  { const stm = await gm('/mock/state', 'GET'); ok(tree(stm).filter((x) => /Calendar (check|moved)/.test(x) && x.endsWith('.pdf')).length === 1, 'exactly one PDF for the edited EOD'); }
   r = await req(`/e/${idCal}/delete`, { method: 'POST' });
-  ok(await waitFor(async () => (await calEvents()).some((x) => x.id === evC.id && x.summary === '(deleted) Calendar check (Live event) – EOD'), 20000), 'deleting the EOD marks its event "(deleted) ..." (same as the Drive setting)');
+  ok(await waitFor(async () => !(await calEvents()).some((x) => x.id === evC.id), 20000), 'deleting the EOD deletes its calendar event (no "(deleted)" prefix)');
+  ok(await waitFor(async () => { const stm = await gm('/mock/state', 'GET'); return !tree(stm).some((x) => x.includes('Calendar moved')) && !tree(stm).some((x) => x.includes('2025-03-03')) && stm.files.some((f) => f.name === 'Calendar moved (Live event)' && f.inTrash); }, 20000), 'deleting the EOD trashes its Drive folder and tidies the emptied day/month/year folders');
   h = await text(await req('/settings')); ok(h.includes('KPI EODs') && h.includes('waiting') || h.includes('All caught up'), 'Settings card shows Calendar status');
   calEventsBeforeClear = (await calEvents()).length;
   driveFilesBeforeClear = (await gm('/mock/state', 'GET')).files.filter((f) => !f.inTrash).length;
@@ -333,7 +342,17 @@ if (GMOCK) {
     const left = (await (await fetch(GMOCK + '/mock/state')).json()).files.filter((f) => !f.inTrash).length;
     ok(left === driveFilesBeforeClear, `Clear all data leaves Google Drive alone (${left} files)`);
     h = await text(await req('/settings/drive')); ok(h.includes('Connected'), 'Drive stays connected after clearing everything');
-    ok((await (await fetch(GMOCK + '/mock/state')).json()).events.filter((x) => x.status !== 'cancelled').length === calEventsBeforeClear, 'Clear all data leaves Google Calendar events alone');
+    ok((await (await fetch(GMOCK + '/mock/state')).json()).events.filter((x) => x.status !== 'cancelled').length === calEventsBeforeClear, 'Clear all data without the Google box leaves Google Calendar events alone');
+    // now WITH "Also remove from Google Drive and Calendar": two new EODs (own year, so the year/month/day folders are ours alone), synced, then cleared
+    const gs = () => fetch(GMOCK + '/mock/state').then((x) => x.json());
+    const evBefore = (await gs()).events.length;
+    for (const [job, date] of [['Wipe me A', '2024-02-10'], ['Wipe me B', '2024-02-10']]) await req('/new', { method: 'POST', body: entryForm({ fields: { job, date, job_type: 'Film shoot' }, crew: [{ name: 'Jason', start: '08:00', stop: '16:00' }], expenses: [{ key: '1', description: 'Snacks', category: 'Meals', amount: '12.50', paid_by: 'personal', person: 'Jason', hasFiles: true }], files: [['file_x1', 'test/fixtures/receipt.jpg', 'image/jpeg']] }) });
+    ok(await waitFor(async () => { const g = await gs(); return g.events.length === evBefore + 2 && tree(g).filter((x) => x.includes('2024-02-10/Wipe me')).length >= 4; }, 30000), 'two new EODs are in Drive (PDF + receipt each) and on the calendar');
+    r = await req('/settings/clear', { method: 'POST', body: new URLSearchParams({ scope: 'entries', confirm: 'DELETE', password: process.env.ADMIN_PASSWORD, google: '1' }) });
+    ok(r.status === 303 && /removed%20in%20the%20background|being%20removed/.test(r.headers.get('location')), 'clear with the Google box ticked is accepted and says Google is cleaned in the background');
+    ok(await waitFor(async () => { const g = await gs(); return g.events.length === evBefore && !g.events.some((x) => /Wipe me/.test(x.summary)); }, 30000), 'Clear all data deleted the calendar events it created');
+    ok(await waitFor(async () => { const g = await gs(); return !tree(g).some((x) => /Wipe me|\/2024/.test(x)) && g.files.filter((f) => /^Wipe me/.test(f.name)).length === 2 && g.files.filter((f) => /^Wipe me/.test(f.name)).every((f) => f.inTrash); }, 30000), 'Clear all data moved the job folders to the Drive trash and tidied the empty day/month/year folders');
+    ok(await waitFor(async () => (await (await req('/settings/drive/status.json')).json()).pending === 0, 20000), 'nothing left waiting in the queue');
   }
 }
 

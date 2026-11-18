@@ -354,9 +354,7 @@ ${st.mode === 'oauth' ? (st.clientIdSet && st.secretSet ? html`<form method="pos
 <label>Shared Drive folder <span class="muted">(link or ID; add the service account to the Shared Drive as Content manager)</span><input name="shared_folder" value="${st.sharedFolderId}" placeholder="https://drive.google.com/drive/folders/…" autocapitalize="off" spellcheck="false"></label>
 </div>
 <label class="check"><input type="checkbox" name="auto" value="1"${chk(st.auto)}> Upload automatically when an EOD is saved or edited</label>
-<fieldset class="stack plain"><legend><b>When an EOD is deleted in the app</b></legend>
-<label class="check"><input type="radio" name="on_delete" value="mark"${chk(st.onDelete === 'mark')}> Keep its Drive folder, renamed “(deleted) …”</label>
-<label class="check"><input type="radio" name="on_delete" value="trash"${chk(st.onDelete === 'trash')}> Move its Drive folder to the trash</label></fieldset>
+<p class="small muted">Deleting an EOD in the app moves its Drive job folder to the <b>Drive trash</b> (Google keeps trashed files for 30 days, so it can be restored) and deletes its Calendar event. Editing an EOD replaces the PDF and receipts in the same folder, and moves or renames the folder if the date or job changed.</p>
 <label>Share the folder with <span class="muted">(emails, comma or one per line; Google emails them a link)</span><textarea name="share" rows="2" autocapitalize="off" spellcheck="false" placeholder="producer@company.com">${shareList}</textarea></label>
 <label>They can<select name="share_role"><option value="reader"${st.shareRole === 'reader' ? raw(' selected') : ''}>View</option><option value="writer"${st.shareRole === 'writer' ? raw(' selected') : ''}>Edit</option></select></label>
 <button class="btn primary big" type="submit">Save</button></form>
@@ -418,12 +416,12 @@ VEHICLE: Sprinter (company) · 120 mi
 NOTES: …
 Open in ${cfg.APP_NAME}: ${cfg.PUBLIC_URL || 'https://eod.example.com'}/e/42</pre>
 <div class="small">📎 EOD 2026-11-13 Villanova promo.pdf <span class="muted">(the PDF from Drive)</span></div></div>
-<p class="small muted">Editing the EOD updates the same event; deleting it removes the event or renames it “(deleted) …”, matching the Drive setting. ${cal.publicUrlSet ? '' : html`<b class="warn">PUBLIC_URL is not set</b>, so events have no link back to the app. Set it in the container environment.`} The attached PDF is only visible to people who can open it in Drive, so share the Drive folder and the calendar with the same people. Clear all data never deletes events.</p></div>`;
+<p class="small muted">Editing the EOD updates the same event; deleting it deletes the event (and moves the Drive folder to the trash). ${cal.publicUrlSet ? '' : html`<b class="warn">PUBLIC_URL is not set</b>, so events have no link back to the app. Set it in the container environment.`} The attached PDF is only visible to people who can open it in Drive, so share the Drive folder and the calendar with the same people. Clear all data never deletes events.</p></div>`;
   return layout(req, { title: 'Google Calendar', active: 'settings', body, fab: false, scripts: ['/drive.js'] });
 }
 
 const fmtMB = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : b >= 1024 ? Math.round(b / 1024) + ' KB' : b + ' bytes');
-function clearPage(req, { stats, needPw, error, scope }) {
+function clearPage(req, { stats, needPw, error, scope, google = {}, removeGoogle = true }) {
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
   const body = html`<div class="detail-head"><a class="back" href="/settings">${icon.left} Settings</a></div>
 <h1>Clear all data</h1>
@@ -431,12 +429,13 @@ ${error ? html`<p class="alert" role="alert">${error}</p>` : ''}
 <div class="card danger-zone stack">
 <p class="warnbig"><b>This permanently deletes ${plural(stats.entries, 'EOD entry').replace('entrys', 'entries')}, ${plural(stats.receipts, 'receipt')} and ${fmtMB(stats.uploadBytes)} of uploaded files.</b> People will lose every logged day, hour and expense.</p>
 <p class="small"><b>Download a copy first:</b> <a href="/export/hours.csv">All hours (CSV)</a> · <a href="/export/expenses.csv">All expenses (CSV)</a></p>
-<p class="small muted">Before clearing, a backup copy of the database is saved in <code>/data/backups/</code> on the server (the last 3 are kept). Receipt image/PDF files are <b>not</b> in that backup; once cleared they are gone from the app. Copies already uploaded to Google Drive are <b>not</b> deleted.</p>
+<p class="small muted">Before clearing, a backup copy of the database is saved in <code>/data/backups/</code> on the server (the last 3 are kept). Receipt image/PDF files are <b>not</b> in that backup; once cleared they are gone from the app. ${google.connected ? html`The Google Drive folders and Calendar events made from these EODs can be removed too (next checkbox).` : 'Google Drive is not connected, so nothing in Google is touched.'}</p>
 </div>
 <form method="post" action="/settings/clear" class="card stack" id="clear-form" autocomplete="off">
 <fieldset class="stack plain"><legend><b>What to clear</b></legend>
 <label class="check"><input type="radio" name="scope" value="entries"${scope !== 'all' ? raw(' checked') : ''}> EOD entries, expenses and receipts (keep notifications)</label>
 <label class="check"><input type="radio" name="scope" value="all"${scope === 'all' ? raw(' checked') : ''}> Everything: also notifications, settings and the notification log (${plural(stats.schedules, 'notification')})</label></fieldset>
+${google.connected ? html`<label class="check"><input type="checkbox" name="google" value="1"${removeGoogle ? raw(' checked') : ''}><span><b>Also remove from Google Drive and Calendar</b><br><span class="small muted">${google.folders} Drive job folder${google.folders === 1 ? '' : 's'} (PDF + receipts) go to the <b>Drive trash</b>, where Google keeps them for 30 days so you can still restore them, then any empty day/month/year folders are tidied up. ${google.events} Calendar event${google.events === 1 ? '' : 's'} are deleted${google.calOn ? '' : ' (Calendar is off, but events already made are still removed)'}. The calendar itself and the main Drive folder stay. This happens in the background and is retried if Google is unreachable.</span></span></label>` : ''}
 <label><span>Type <b>DELETE</b> to confirm</span><input name="confirm" required autocapitalize="characters" spellcheck="false" autocomplete="off" placeholder="DELETE"></label>
 ${needPw ? html`<label>Admin password<input type="password" name="password" required autocomplete="current-password"></label>` : ''}
 <button class="btn dangerfill big" type="submit">Clear all data</button>
